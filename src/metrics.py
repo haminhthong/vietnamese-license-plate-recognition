@@ -1,5 +1,7 @@
 """Các phép đo hỗ trợ đánh giá detection và OCR."""
 
+from collections.abc import Iterable
+
 from .ocr import normalize_plate_text
 
 
@@ -26,3 +28,16 @@ def box_iou(box_a, box_b) -> float:
     area_b = max(0.0, bx2 - bx1) * max(0.0, by2 - by1)
     union = area_a + area_b - intersection
     return intersection / union if union else 0.0
+
+
+def summarize_ocr(pairs: Iterable[tuple[str, str]]) -> dict[str, float | int]:
+    normalized = [(normalize_plate_text(truth), normalize_plate_text(prediction)) for truth, prediction in pairs]
+    if not normalized:
+        raise ValueError("Không có mẫu OCR để đánh giá")
+    total_characters = sum(len(truth) for truth, _ in normalized)
+    if total_characters == 0:
+        raise ValueError("Nhãn OCR không được để trống")
+    total_edits = sum(levenshtein_distance(truth, prediction) for truth, prediction in normalized)
+    exact_matches = sum(truth == prediction for truth, prediction in normalized)
+    cer = total_edits / total_characters
+    return {"samples": len(normalized), "exact_plate_accuracy": exact_matches / len(normalized), "cer": cer, "character_accuracy": max(0.0, 1.0 - cer)}

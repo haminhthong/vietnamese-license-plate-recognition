@@ -17,3 +17,5 @@ artifacts/
 *.jpeg
 *.png
 !docs/*.png
+models/
+.coverage

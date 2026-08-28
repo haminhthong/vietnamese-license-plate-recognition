@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from time import perf_counter
 from typing import Any
 
 import cv2
@@ -29,8 +30,12 @@ class LicensePlateRecognizer:
         use_gpu = torch.cuda.is_available() if gpu is None else gpu
         self.detector = YOLO(str(weights))
         self.reader = easyocr.Reader(["en"], gpu=use_gpu)
+        self.last_latency_ms = 0.0
 
     def predict(self, image_bgr: np.ndarray, confidence: float = 0.25) -> list[dict[str, Any]]:
+        if image_bgr is None or image_bgr.size == 0:
+            raise ValueError("Ảnh đầu vào rỗng")
+        started_at = perf_counter()
         result = self.detector.predict(source=image_bgr, conf=confidence, iou=0.60, imgsz=640, verbose=False)[0]
         predictions = []
         if result.boxes is None:
@@ -47,6 +52,10 @@ class LicensePlateRecognizer:
                     "detection_confidence": float(box.conf.item()),
                     **read_plate(self.reader, crop),
                 })
+        elapsed_ms = (perf_counter() - started_at) * 1_000
+        self.last_latency_ms = elapsed_ms
+        for prediction in predictions:
+            prediction["pipeline_latency_ms"] = elapsed_ms
         return predictions
 
     def predict_file(self, image_path: str | Path, output_path: str | Path | None = None):

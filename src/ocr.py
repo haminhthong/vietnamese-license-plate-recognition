@@ -6,6 +6,8 @@ from typing import Any
 
 import numpy as np
 
+from .rectification import rectify_plate
+
 DIGIT_SUBSTITUTIONS = {
     "O": "0", "Q": "0", "D": "0", "I": "1", "L": "1", "Z": "2",
     "J": "3", "A": "4", "S": "5", "G": "6", "B": "8",
@@ -139,9 +141,10 @@ def infer_plate_layout(crop_bgr: np.ndarray, wide_ratio_threshold: float = 2.20)
 
 
 def read_plate(reader: Any, crop_bgr: np.ndarray, layout: str = "auto") -> dict[str, Any]:
-    resolved_layout = layout if layout in {"1_line", "2_line"} else infer_plate_layout(crop_bgr)
+    rectified_crop, rectified = rectify_plate(crop_bgr)
+    resolved_layout = layout if layout in {"1_line", "2_line"} else infer_plate_layout(rectified_crop)
     candidates = []
-    for variant_name, processed in preprocess_plate_variants(crop_bgr).items():
+    for variant_name, processed in preprocess_plate_variants(rectified_crop).items():
         results = reader.readtext(
             processed, detail=1, paragraph=False,
             allowlist="0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ-.",
@@ -150,7 +153,7 @@ def read_plate(reader: Any, crop_bgr: np.ndarray, layout: str = "auto") -> dict[
         validated = validate_and_correct_plate(raw_text)
         score = confidence + (0.20 if validated["format_valid"] else 0.0) - 0.07 * validated["correction_cost"]
         candidates.append({
-            **validated, "ocr_confidence": confidence, "layout": resolved_layout,
+            **validated, "ocr_confidence": confidence, "layout": resolved_layout, "rectified": rectified,
             "variant": variant_name, "score": score,
         })
     if candidates:
@@ -158,5 +161,5 @@ def read_plate(reader: Any, crop_bgr: np.ndarray, layout: str = "auto") -> dict[
     return {
         "raw_text": "", "text": "", "format_valid": False, "template": None,
         "correction_cost": 0.0, "ocr_confidence": 0.0, "layout": resolved_layout,
-        "variant": None, "score": 0.0,
+        "variant": None, "score": 0.0, "rectified": rectified,
     }
