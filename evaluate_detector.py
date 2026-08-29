@@ -1,11 +1,12 @@
 """Đánh giá detector trên test split chưa dùng để tinh chỉnh mô hình."""
 
 import argparse
-import json
 from pathlib import Path
 
 import numpy as np
 from ultralytics import YOLO
+
+from src.io_utils import write_json
 
 
 def main() -> None:
@@ -40,9 +41,8 @@ def main() -> None:
         "recall": float(metrics.box.mr), "mAP50": float(metrics.box.map50),
         "mAP50_95": float(metrics.box.map), "per_class": per_class,
     }
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    print(json.dumps(payload, indent=2))
+    write_json(args.output, payload)
+    print(args.output.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

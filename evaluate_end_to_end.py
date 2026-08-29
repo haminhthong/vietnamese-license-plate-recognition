@@ -1,12 +1,12 @@
 """Đánh giá detection và OCR hoàn chỉnh trên annotation đã phiên âm."""
 
 import argparse
-import json
 from pathlib import Path
 
 import cv2
 import pandas as pd
 
+from src.io_utils import require_columns, require_non_empty_text, resolve_relative_path, write_json
 from src.metrics import box_iou, summarize_ocr
 from src.pipeline import LicensePlateRecognizer
 
@@ -20,18 +20,14 @@ def main() -> None:
     parser.add_argument("--cpu", action="store_true")
     args = parser.parse_args()
     frame = pd.read_csv(args.annotations)
-    required = {"image_path", "x1", "y1", "x2", "y2", "plate_text"}
-    if missing := required - set(frame.columns):
-        raise ValueError(f"Thiếu cột bắt buộc: {sorted(missing)}")
-    if frame.empty or frame["plate_text"].fillna("").astype(str).str.strip().eq("").any():
-        raise ValueError("Annotation end-to-end không được rỗng")
+    require_columns(frame, {"image_path", "x1", "y1", "x2", "y2", "plate_text"}, "Annotation end-to-end")
+    require_non_empty_text(frame, "plate_text", "Annotation end-to-end")
 
     recognizer = LicensePlateRecognizer(args.weights, gpu=False if args.cpu else None)
     base_directory = args.annotations.resolve().parent
     records, latencies = [], []
     for image_name, ground_truths in frame.groupby("image_path", sort=False):
-        image_path = Path(image_name)
-        image_path = image_path if image_path.is_absolute() else base_directory / image_path
+        image_path = resolve_relative_path(image_name, base_directory)
         image = cv2.imread(str(image_path))
         if image is None:
             raise ValueError(f"Không đọc được ảnh: {image_path}")
@@ -56,14 +52,15 @@ def main() -> None:
     payload = {
         "detection_recall_at_iou": float(predictions_frame["detected"].mean()),
         "iou_threshold": args.iou_threshold,
-        "raw": summarize_ocr(zip(predictions_frame["ground_truth"], predictions_frame["raw_prediction"])),
-        "corrected": summarize_ocr(zip(predictions_frame["ground_truth"], predictions_frame["corrected_prediction"])),
+        "raw": summarize_ocr(zip(predictions_frame["ground_truth"], predictions_frame["raw_prediction"], strict=True)),
+        "corrected": summarize_ocr(
+            zip(predictions_frame["ground_truth"], predictions_frame["corrected_prediction"], strict=True)
+        ),
         "mean_pipeline_latency_ms": sum(latencies) / len(latencies),
     }
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    write_json(args.output, payload)
     predictions_frame.to_csv(args.output.with_suffix(".predictions.csv"), index=False)
-    print(json.dumps(payload, indent=2))
+    print(args.output.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

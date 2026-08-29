@@ -8,6 +8,11 @@ import numpy as np
 
 from .rectification import rectify_plate
 
+ASCII_DIGITS = "0123456789"
+ASCII_LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+OCR_ALLOWLIST = f"{ASCII_DIGITS}{ASCII_LETTERS}-."
+VALID_LAYOUTS = {"1_line", "2_line"}
+
 DIGIT_SUBSTITUTIONS = {
     "O": "0", "Q": "0", "D": "0", "I": "1", "L": "1", "Z": "2",
     "J": "3", "A": "4", "S": "5", "G": "6", "B": "8",
@@ -24,7 +29,9 @@ PLATE_TEMPLATES = {
 
 
 def normalize_plate_text(text: str) -> str:
-    return "".join(character for character in str(text).upper() if character.isalnum())
+    """Chuẩn hóa về chữ Latin viết hoa và chữ số ASCII."""
+    allowed = set(ASCII_DIGITS + ASCII_LETTERS)
+    return "".join(character for character in str(text).upper() if character in allowed)
 
 
 def fit_plate_template(raw_text: str, template: str) -> dict[str, Any] | None:
@@ -33,9 +40,9 @@ def fit_plate_template(raw_text: str, template: str) -> dict[str, Any] | None:
         return None
     output: list[str] = []
     correction_cost = 0.0
-    for character, expected_type in zip(raw_text, template):
+    for character, expected_type in zip(raw_text, template, strict=True):
         substitutions = DIGIT_SUBSTITUTIONS if expected_type == "D" else LETTER_SUBSTITUTIONS
-        is_valid = character in "0123456789" if expected_type == "D" else character in "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+        is_valid = character in ASCII_DIGITS if expected_type == "D" else character in ASCII_LETTERS
         if is_valid:
             output.append(character)
         elif character in substitutions:
@@ -74,6 +81,11 @@ def _token_geometry(bbox: list[list[float]]) -> dict[str, float]:
 
 
 def order_ocr_tokens(ocr_results: list, layout: str, minimum_confidence: float = 0.20) -> tuple[str, float]:
+    """Lọc và sắp xếp token OCR theo bố cục biển số."""
+    if layout not in VALID_LAYOUTS:
+        raise ValueError(f"Bố cục không hợp lệ: {layout}")
+    if not 0 <= minimum_confidence <= 1:
+        raise ValueError("minimum_confidence phải nằm trong [0, 1]")
     tokens = []
     for bbox, text, confidence in ocr_results:
         normalized = normalize_plate_text(text)
@@ -91,20 +103,7 @@ def order_ocr_tokens(ocr_results: list, layout: str, minimum_confidence: float =
         return "", 0.0
 
     if layout == "2_line" and len(tokens) >= 2:
-        sorted_y = sorted(tokens, key=lambda token: token["center_y"])
-        gaps = [sorted_y[i + 1]["center_y"] - sorted_y[i]["center_y"] for i in range(len(sorted_y) - 1)]
-        split_index = int(np.argmax(gaps)) + 1 if gaps else len(sorted_y)
-        if gaps and max(gaps) >= 0.25 * median_height:
-            rows = [sorted_y[:split_index], sorted_y[split_index:]]
-        else:
-            median_y = float(np.median([token["center_y"] for token in tokens]))
-            rows = [
-                [token for token in tokens if token["center_y"] <= median_y],
-                [token for token in tokens if token["center_y"] > median_y],
-            ]
-        rows = [row for row in rows if row]
-        rows.sort(key=lambda row: np.mean([token["center_y"] for token in row]))
-        ordered = [token for row in rows for token in sorted(row, key=lambda token: token["center_x"])]
+        ordered = _order_two_line_tokens(tokens, median_height)
     else:
         ordered = sorted(tokens, key=lambda token: token["center_x"])
 
@@ -116,7 +115,34 @@ def order_ocr_tokens(ocr_results: list, layout: str, minimum_confidence: float =
     return text, confidence
 
 
+def _order_two_line_tokens(tokens: list[dict[str, Any]], median_height: float) -> list[dict[str, Any]]:
+    """Tách token thành hai hàng rồi đọc từ trái sang phải, trên xuống dưới."""
+    sorted_by_y = sorted(tokens, key=lambda token: token["center_y"])
+    gaps = [
+        sorted_by_y[index + 1]["center_y"] - sorted_by_y[index]["center_y"]
+        for index in range(len(sorted_by_y) - 1)
+    ]
+    largest_gap = max(gaps, default=0.0)
+    if largest_gap >= 0.25 * median_height:
+        split_index = int(np.argmax(gaps)) + 1
+        rows = [sorted_by_y[:split_index], sorted_by_y[split_index:]]
+    else:
+        median_y = float(np.median([token["center_y"] for token in tokens]))
+        rows = [
+            [token for token in tokens if token["center_y"] <= median_y],
+            [token for token in tokens if token["center_y"] > median_y],
+        ]
+    non_empty_rows = [row for row in rows if row]
+    non_empty_rows.sort(key=lambda row: np.mean([token["center_y"] for token in row]))
+    return [
+        token
+        for row in non_empty_rows
+        for token in sorted(row, key=lambda token: token["center_x"])
+    ]
+
+
 def preprocess_plate_variants(crop_bgr: np.ndarray) -> dict[str, np.ndarray]:
+    """Tạo các biến thể ảnh để OCR chọn kết quả tốt nhất."""
     import cv2
 
     if crop_bgr is None or crop_bgr.size == 0:
@@ -134,6 +160,9 @@ def preprocess_plate_variants(crop_bgr: np.ndarray) -> dict[str, np.ndarray]:
 
 
 def infer_plate_layout(crop_bgr: np.ndarray, wide_ratio_threshold: float = 2.20) -> str:
+    """Ước lượng biển một hoặc hai dòng bằng tỷ lệ khung ảnh."""
+    if wide_ratio_threshold <= 0:
+        raise ValueError("wide_ratio_threshold phải lớn hơn 0")
     if crop_bgr is None or crop_bgr.size == 0:
         return "1_line"
     height, width = crop_bgr.shape[:2]
@@ -141,13 +170,16 @@ def infer_plate_layout(crop_bgr: np.ndarray, wide_ratio_threshold: float = 2.20)
 
 
 def read_plate(reader: Any, crop_bgr: np.ndarray, layout: str = "auto") -> dict[str, Any]:
+    """Chỉnh phối cảnh, chạy nhiều biến thể OCR và chọn ứng viên tốt nhất."""
+    if layout != "auto" and layout not in VALID_LAYOUTS:
+        raise ValueError(f"Bố cục không hợp lệ: {layout}")
     rectified_crop, rectified = rectify_plate(crop_bgr)
-    resolved_layout = layout if layout in {"1_line", "2_line"} else infer_plate_layout(rectified_crop)
+    resolved_layout = layout if layout in VALID_LAYOUTS else infer_plate_layout(rectified_crop)
     candidates = []
     for variant_name, processed in preprocess_plate_variants(rectified_crop).items():
         results = reader.readtext(
             processed, detail=1, paragraph=False,
-            allowlist="0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ-.",
+            allowlist=OCR_ALLOWLIST,
         )
         raw_text, confidence = order_ocr_tokens(results, resolved_layout)
         validated = validate_and_correct_plate(raw_text)

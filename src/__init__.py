@@ -1,6 +1,5 @@
-"""Các thành phần dùng chung cho hệ thống nhận diện biển số xe Việt Nam."""
+"""Mã nguồn cho hệ thống nhận diện biển số xe Việt Nam.
 
-from .ocr import infer_plate_layout, normalize_plate_text, validate_and_correct_plate
-from .rectification import rectify_plate
-
-__all__ = ["infer_plate_layout", "normalize_plate_text", "rectify_plate", "validate_and_correct_plate"]
+Các thành phần được nhập trực tiếp từ module tương ứng để tránh tải OpenCV,
+EasyOCR hoặc Ultralytics khi chương trình chỉ cần cấu hình hay tiện ích dữ liệu.
+"""

@@ -7,6 +7,7 @@ import numpy as np
 
 
 def order_points(points: np.ndarray) -> np.ndarray:
+    """Sắp xếp bốn đỉnh theo chiều kim đồng hồ, bắt đầu từ góc trái trên."""
     points = np.asarray(points, dtype=np.float32).reshape(4, 2)
     sums = points.sum(axis=1)
     differences = np.diff(points, axis=1).ravel()
@@ -14,6 +15,7 @@ def order_points(points: np.ndarray) -> np.ndarray:
 
 
 def warp_quad(image: np.ndarray, points: np.ndarray) -> np.ndarray:
+    """Biến đổi một tứ giác thành ảnh chữ nhật nhìn thẳng."""
     top_left, top_right, bottom_right, bottom_left = order_points(points)
     width = int(max(np.linalg.norm(bottom_right - bottom_left), np.linalg.norm(top_right - top_left)))
     height = int(max(np.linalg.norm(top_right - bottom_right), np.linalg.norm(top_left - bottom_left)))
@@ -28,6 +30,8 @@ def rectify_plate(crop_bgr: np.ndarray, minimum_area_ratio: float = 0.35) -> tup
     """Tìm biên tứ giác hợp lý; giữ crop gốc nếu không đủ tin cậy."""
     if crop_bgr is None or crop_bgr.size == 0:
         return crop_bgr, False
+    if not 0 < minimum_area_ratio <= 1:
+        raise ValueError("minimum_area_ratio phải nằm trong (0, 1]")
     height, width = crop_bgr.shape[:2]
     gray = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2GRAY)
     edges = cv2.Canny(cv2.GaussianBlur(gray, (5, 5), 0), 60, 180)

@@ -1,10 +1,10 @@
 """Kiểm tra dữ liệu YOLO và tạo split không rò rỉ giữa các nhóm nguồn."""
 
 import argparse
-import json
 from pathlib import Path
 
 from src.dataset import audit_manifest, collect_manifest, find_group_safe_split, materialize_split
+from src.io_utils import write_json
 
 
 def main() -> None:
@@ -16,9 +16,8 @@ def main() -> None:
     args = parser.parse_args()
     manifest = collect_manifest(args.source)
     audit = audit_manifest(manifest)
-    args.audit_output.parent.mkdir(parents=True, exist_ok=True)
-    args.audit_output.write_text(json.dumps(audit, indent=2), encoding="utf-8")
-    print(json.dumps(audit, indent=2))
+    write_json(args.audit_output, audit)
+    print(args.audit_output.read_text(encoding="utf-8"))
     split = find_group_safe_split(manifest, seed=args.seed)
     yaml_path = materialize_split(split, args.output)
     print(split.groupby("split").agg(images=("image_path", "count"), objects=("n_objects", "sum")))

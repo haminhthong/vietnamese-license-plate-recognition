@@ -4,7 +4,7 @@ import argparse
 import json
 from pathlib import Path
 
-from src.pipeline import LicensePlateRecognizer
+from src.pipeline import LicensePlateRecognizer, RecognitionConfig
 
 
 def main() -> None:
@@ -13,8 +13,14 @@ def main() -> None:
     parser.add_argument("--source", type=Path, required=True)
     parser.add_argument("--output", type=Path, default=Path("outputs/prediction.jpg"))
     parser.add_argument("--cpu", action="store_true")
+    parser.add_argument("--confidence", type=float, default=0.25)
     args = parser.parse_args()
-    recognizer = LicensePlateRecognizer(args.weights, gpu=False if args.cpu else None)
+    config = RecognitionConfig(detection_confidence=args.confidence)
+    recognizer = LicensePlateRecognizer(
+        args.weights,
+        gpu=False if args.cpu else None,
+        config=config,
+    )
     results = recognizer.predict_file(args.source, args.output)
     print(json.dumps(results, ensure_ascii=False, indent=2))
     print(f"Ảnh kết quả: {args.output}")
