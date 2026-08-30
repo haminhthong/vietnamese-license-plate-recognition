@@ -1,4 +1,12 @@
-"""Kiểm tra dữ liệu YOLO và chia tập theo nhóm nguồn để tránh rò rỉ dữ liệu."""
+"""Kiểm tra dữ liệu YOLOv8 và chia tập train/val/test theo nhóm nguồn để tránh rò rỉ dữ liệu (Data Leakage).
+
+Module này hỗ trợ:
+1. Trích xuất tên nhóm nguồn (Video Frame Stem) từ tên tệp ảnh.
+2. Tính mã băm MD5 để phát hiện ảnh trùng lặp nội dung.
+3. Sử dụng cấu trúc dữ liệu Union-Find (Disjoint Set Union) để gộp các nhóm có chung ảnh trùng hash.
+4. Thuật toán `GroupShuffleSplit` để phân chia dữ liệu cân bằng theo tỷ lệ 70% Train / 15% Val / 15% Test.
+5. Tạo thư mục dữ liệu đích và file `data.yaml` tiêu chuẩn cho Ultralytics YOLOv8.
+"""
 
 from __future__ import annotations
 
@@ -12,17 +20,35 @@ import pandas as pd
 import yaml
 from sklearn.model_selection import GroupShuffleSplit
 
+# Định nghĩa danh sách các class và định dạng ảnh hỗ trợ
 CLASS_NAMES = {0: "license_plate"}
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 TARGET_RATIOS = {"train": 0.70, "val": 0.15, "test": 0.15}
 
 
 def infer_source_group(stem: str) -> str:
+    """Suy luận nhóm nguồn gốc từ tên tệp ảnh (ví dụ: 'cam01_001.jpg' -> 'cam01').
+
+    Args:
+        stem (str): Tên tệp ảnh không kèm đuôi mở rộng.
+
+    Returns:
+        str: Nhận diện tiền tố làm mã nhóm, hoặc tạo nhóm đơn lẻ nếu không có mẫu tiền tố.
+    """
     match = re.match(r"^(.+?)[_-](\d+)$", stem)
     return match.group(1).lower() if match else f"standalone::{stem.lower()}"
 
 
 def file_md5(path: Path, chunk_size: int = 1 << 20) -> str:
+    """Tính mã băm MD5 của tệp để phát hiện ảnh bị trùng lặp nội dung binary.
+
+    Args:
+        path (Path): Đường dẫn tới tệp cần tính hash.
+        chunk_size (int): Kích thước khối đọc dữ liệu (mặc định: 1 MB).
+
+    Returns:
+        str: Chuỗi hex digest đại diện cho mã MD5.
+    """
     digest = hashlib.md5()
     with path.open("rb") as handle:
         for chunk in iter(lambda: handle.read(chunk_size), b""):
@@ -31,6 +57,17 @@ def file_md5(path: Path, chunk_size: int = 1 << 20) -> str:
 
 
 def parse_label_file(label_path: Path) -> list[tuple[int, float, float, float, float]]:
+    """Phân tích tệp nhãn định dạng YOLO txt (class_id, x_center, y_center, width, height).
+
+    Args:
+        label_path (Path): Đường dẫn tệp nhãn txt.
+
+    Returns:
+        list[tuple[int, float, float, float, float]]: Danh sách các bounding box hợp lệ.
+
+    Raises:
+        ValueError: Nếu định dạng nhãn sai, tọa độ nằm ngoài [0, 1] hoặc class_id không hỗ trợ.
+    """
     rows = []
     for line_number, line in enumerate(label_path.read_text(encoding="utf-8-sig").splitlines(), 1):
         parts = line.strip().split()
@@ -56,6 +93,19 @@ def parse_label_file(label_path: Path) -> list[tuple[int, float, float, float, f
 
 
 def collect_manifest(root: Path) -> pd.DataFrame:
+    """Thu thập toàn bộ thông tin ảnh, nhãn, mã băm MD5 và nhóm nguồn từ thư mục dữ liệu YOLO.
+
+    Args:
+        root (Path): Đường dẫn thư mục dữ liệu gốc chứa train/valid/test.
+
+    Returns:
+        pd.DataFrame: Bảng manifest chứa đầy đủ thuộc tính từng ảnh.
+
+    Raises:
+        FileNotFoundError: Nếu thiếu các thư mục con bắt buộc.
+        RuntimeError: Nếu không tìm thấy cặp ảnh/nhãn hợp lệ.
+        ValueError: Nếu phát hiện ảnh thiếu nhãn hoặc ảnh không đọc được.
+    """
     import cv2
 
     required_directories = [
@@ -65,11 +115,12 @@ def collect_manifest(root: Path) -> pd.DataFrame:
     ]
     missing_directories = [path for path in required_directories if not path.is_dir()]
     if missing_directories:
-        raise FileNotFoundError(f"Thiếu thư mục dữ liệu: {missing_directories[0]}")
+        raise FileNotFoundError(f"Thiếu thư mục dữ liệu bắt buộc: {missing_directories[0]}")
 
     records = []
     missing_labels: list[Path] = []
     unreadable_images: list[Path] = []
+
     for original_split in ("train", "valid", "test"):
         image_dir, label_dir = root / original_split / "images", root / original_split / "labels"
         if not image_dir.is_dir():
@@ -88,24 +139,33 @@ def collect_manifest(root: Path) -> pd.DataFrame:
             labels = parse_label_file(label_path)
             counts = Counter(item[0] for item in labels)
             records.append({
-                "original_split": original_split, "image_path": str(image_path),
-                "label_path": str(label_path), "image_name": image_path.name,
-                "group_id": infer_source_group(image_path.stem), "n_objects": len(labels),
-                "class_0_count": counts.get(0, 0), "md5": file_md5(image_path),
+                "original_split": original_split,
+                "image_path": str(image_path),
+                "label_path": str(label_path),
+                "image_name": image_path.name,
+                "group_id": infer_source_group(image_path.stem),
+                "n_objects": len(labels),
+                "class_0_count": counts.get(0, 0),
+                "md5": file_md5(image_path),
             })
+
     if not records:
-        raise RuntimeError(f"Không tìm thấy cặp ảnh/nhãn YOLO hợp lệ trong: {root}")
+        raise RuntimeError(f"Không tìm thấy cặp ảnh/nhãn YOLO hợp lệ trong thư mục: {root}")
     if missing_labels:
         preview = ", ".join(str(path) for path in missing_labels[:3])
-        raise ValueError(f"Có {len(missing_labels)} ảnh thiếu nhãn. Ví dụ: {preview}")
+        raise ValueError(f"Có {len(missing_labels)} ảnh thiếu tệp nhãn. Ví dụ: {preview}")
     if unreadable_images:
         preview = ", ".join(str(path) for path in unreadable_images[:3])
-        raise ValueError(f"Có {len(unreadable_images)} ảnh không đọc được. Ví dụ: {preview}")
+        raise ValueError(f"Có {len(unreadable_images)} ảnh lỗi không đọc được. Ví dụ: {preview}")
+
     return _merge_groups_connected_by_hash(pd.DataFrame(records))
 
 
 def _merge_groups_connected_by_hash(frame: pd.DataFrame) -> pd.DataFrame:
-    """Gộp các nhóm nguồn có chung ảnh để ảnh trùng không nằm ở hai split."""
+    """Sử dụng thuật toán Disjoint-Set Union (DSU) để gộp các nhóm nguồn có chung ảnh trùng MD5.
+
+    Điều này đảm bảo hai ảnh giống hệt nhau không bao giờ bị rơi vào hai tập split khác nhau (gây rò rỉ).
+    """
     parent = {group_id: group_id for group_id in frame["group_id"].unique()}
 
     def find(group_id: str) -> str:
@@ -130,10 +190,12 @@ def _merge_groups_connected_by_hash(frame: pd.DataFrame) -> pd.DataFrame:
 
 
 def audit_manifest(frame: pd.DataFrame) -> dict:
+    """Thống kê chi tiết số lượng ảnh, đối tượng, nhóm nguồn và số nhóm bị rò rỉ giữa các tập gốc."""
     crossing_groups = frame.groupby("group_id")["original_split"].nunique()
     crossing_hashes = frame.groupby("md5")["original_split"].nunique()
     return {
-        "images": len(frame), "objects": int(frame["n_objects"].sum()),
+        "images": len(frame),
+        "objects": int(frame["n_objects"].sum()),
         "groups": int(frame["group_id"].nunique()),
         "groups_crossing_splits": int((crossing_groups > 1).sum()),
         "duplicate_hashes_crossing_splits": int((crossing_hashes > 1).sum()),
@@ -141,6 +203,7 @@ def audit_manifest(frame: pd.DataFrame) -> dict:
 
 
 def _score(frame: pd.DataFrame) -> float:
+    """Hàm đánh giá độ lệch giữa phân bố ngẫu nhiên và tỷ lệ mục tiêu 70/15/15."""
     total_images = len(frame)
     total_objects = frame["class_0_count"].sum()
     score = 0.0
@@ -153,6 +216,16 @@ def _score(frame: pd.DataFrame) -> float:
 
 
 def find_group_safe_split(frame: pd.DataFrame, seed: int = 42, trials: int = 1000) -> pd.DataFrame:
+    """Tìm cách chia Group-Safe Split tối ưu nhất thông qua phương pháp thử nghiệm nhiều hạt giống (trials).
+
+    Args:
+        frame (pd.DataFrame): Manifest dữ liệu đã gộp nhóm.
+        seed (int): Hạt giống ngẫu nhiên khởi tạo.
+        trials (int): Số lần thử nghiệm tìm phương án tối ưu.
+
+    Returns:
+        pd.DataFrame: Bảng manifest chứa cột 'split' mới (train, val, test).
+    """
     best, best_score = None, float("inf")
     for trial in range(trials):
         outer = GroupShuffleSplit(n_splits=1, test_size=0.30, random_state=seed + trial)
@@ -169,17 +242,29 @@ def find_group_safe_split(frame: pd.DataFrame, seed: int = 42, trials: int = 100
         candidate_score = _score(candidate)
         if candidate_score < best_score:
             best, best_score = candidate, candidate_score
+
     if best is None or best_score >= 1_000:
-        raise RuntimeError("Không thể tạo split theo nhóm mà vẫn có đủ class trong mỗi tập")
+        raise RuntimeError("Không thể tạo split theo nhóm mà vẫn bảo đảm đủ dữ liệu cho mỗi tập.")
     assert best.groupby("group_id")["split"].nunique().max() == 1
     return best
 
 
 def materialize_split(frame: pd.DataFrame, destination: Path) -> Path:
+    """Sao chép tệp ảnh và tệp nhãn vào thư mục phân chia mới và tạo tệp cấu hình data.yaml.
+
+    Args:
+        frame (pd.DataFrame): Manifest đã gán phân chia 'split'.
+        destination (Path): Thư mục đích lưu dataset mới.
+
+    Returns:
+        Path: Đường dẫn tới tệp data.yaml vừa được khởi tạo.
+    """
     if destination.exists():
         raise FileExistsError(f"Thư mục đích đã tồn tại: {destination}")
+
     duplicate_names = set(frame.loc[frame["image_name"].duplicated(keep=False), "image_name"])
     destination_names = []
+
     for row in frame.itertuples():
         source_image, source_label = Path(row.image_path), Path(row.label_path)
         name = f"{row.original_split}__{source_image.name}" if row.image_name in duplicate_names else source_image.name
@@ -189,12 +274,17 @@ def materialize_split(frame: pd.DataFrame, destination: Path) -> Path:
         shutil.copy2(source_image, image_dir / name)
         shutil.copy2(source_label, label_dir / f"{Path(name).stem}.txt")
         destination_names.append(name)
+
     output = frame.copy()
     output["destination_name"] = destination_names
     output.to_csv(destination / "split_manifest.csv", index=False)
+
     yaml_path = destination.parent / "data.yaml"
     yaml_path.write_text(yaml.safe_dump({
-        "path": str(destination.resolve()), "train": "train/images", "val": "val/images",
-        "test": "test/images", "names": CLASS_NAMES,
+        "path": str(destination.resolve()),
+        "train": "train/images",
+        "val": "val/images",
+        "test": "test/images",
+        "names": CLASS_NAMES,
     }, sort_keys=False), encoding="utf-8")
     return yaml_path

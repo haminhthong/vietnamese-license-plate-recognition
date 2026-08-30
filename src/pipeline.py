@@ -1,4 +1,8 @@
-"""Pipeline nhận diện hoàn chỉnh gồm YOLO và EasyOCR."""
+"""Pipeline điều phối quy trình nhận diện biển số xe hoàn chỉnh (YOLOv8 + EasyOCR + Post-processing).
+
+Module này kết nối các thành phần phát hiện đối tượng, cắt vùng ảnh có đệm, nắn góc phối cảnh,
+nhận dạng ký tự và ghi đè kết quả lên ảnh minh họa.
+"""
 
 from __future__ import annotations
 
@@ -17,7 +21,14 @@ Box = tuple[int, int, int, int]
 
 @dataclass(frozen=True)
 class RecognitionConfig:
-    """Các tham số dùng thống nhất cho detector và bước cắt ảnh."""
+    """Các thông số cấu hình thống nhất cho bước phát hiện (detector) và cắt vùng ảnh biển số.
+
+    Attributes:
+        detection_confidence (float): Ngưỡng độ tin cậy tối thiểu của YOLOv8 (mặc định: 0.25).
+        nms_iou (float): Ngưỡng NMS IoU loại bỏ bounding box trùng lặp (mặc định: 0.60).
+        image_size (int): Kích thước ảnh resize đầu vào mô hình YOLO (mặc định: 640).
+        padding_ratio (float): Tỷ lệ đệm mở rộng lề khi cắt biển số (mặc định: 0.05 tức 5%).
+    """
 
     detection_confidence: float = 0.25
     nms_iou: float = 0.60
@@ -25,25 +36,38 @@ class RecognitionConfig:
     padding_ratio: float = 0.05
 
     def __post_init__(self) -> None:
+        """Kiểm tra tính hợp lệ của các giá trị tham số cấu hình."""
         if not 0 <= self.detection_confidence <= 1:
-            raise ValueError("detection_confidence phải nằm trong [0, 1]")
+            raise ValueError("Tham số 'detection_confidence' phải nằm trong khoảng [0, 1].")
         if not 0 <= self.nms_iou <= 1:
-            raise ValueError("nms_iou phải nằm trong [0, 1]")
+            raise ValueError("Tham số 'nms_iou' phải nằm trong khoảng [0, 1].")
         if self.image_size <= 0:
-            raise ValueError("image_size phải lớn hơn 0")
+            raise ValueError("Tham số 'image_size' phải lớn hơn 0.")
         if self.padding_ratio < 0:
-            raise ValueError("padding_ratio không được âm")
+            raise ValueError("Tham số 'padding_ratio' không được nhỏ hơn 0.")
 
 
 def crop_with_padding(image: np.ndarray, box: Box, padding_ratio: float = 0.05) -> tuple[np.ndarray, Box]:
-    """Cắt vùng ảnh và thêm khoảng đệm nhưng không vượt biên ảnh."""
+    """Cắt vùng ảnh chứa biển số từ Bounding Box và mở rộng lề đệm nhưng đảm bảo không vượt quá biên ảnh.
+
+    Args:
+        image (np.ndarray): Ảnh BGR gốc.
+        box (Box): Tọa độ (x1, y1, x2, y2).
+        padding_ratio (float): Tỷ lệ đệm (mặc định: 0.05).
+
+    Returns:
+        tuple[np.ndarray, Box]: Cặp (ảnh_crop_đã_đệm, tọa_độ_box_đã_đệm).
+
+    Raises:
+        ValueError: Nếu ảnh rỗng, padding_ratio âm hoặc tọa độ box không hợp lệ.
+    """
     if image is None or image.size == 0:
-        raise ValueError("Ảnh đầu vào rỗng")
+        raise ValueError("Ảnh đầu vào bị rỗng.")
     if padding_ratio < 0:
-        raise ValueError("padding_ratio không được âm")
+        raise ValueError("Tham số 'padding_ratio' không được nhỏ hơn 0.")
     x1, y1, x2, y2 = map(int, box)
     if x2 <= x1 or y2 <= y1:
-        raise ValueError(f"Bounding box không hợp lệ: {box}")
+        raise ValueError(f"Tọa độ Bounding box không hợp lệ: {box}")
     height, width = image.shape[:2]
     pad_x, pad_y = int((x2 - x1) * padding_ratio), int((y2 - y1) * padding_ratio)
     padded: Box = (
@@ -57,7 +81,13 @@ def crop_with_padding(image: np.ndarray, box: Box, padding_ratio: float = 0.05) 
 
 
 class LicensePlateRecognizer:
-    """Điều phối detector, chỉnh ảnh và OCR trong một pipeline duy nhất."""
+    """Lớp điều phối chính thực thi pipeline end-to-end từ ảnh đầu vào đến kết quả biển số.
+
+    Args:
+        weights (str | Path): Đường dẫn đến tệp trọng số YOLOv8 (.pt).
+        gpu (bool | None): Ép buộc sử dụng GPU (True), CPU (False) hoặc tự động phát hiện (None).
+        config (RecognitionConfig | None): Cấu hình tùy chọn cho pipeline.
+    """
 
     def __init__(
         self,
@@ -76,12 +106,20 @@ class LicensePlateRecognizer:
         self.last_latency_ms = 0.0
 
     def predict(self, image_bgr: np.ndarray, confidence: float | None = None) -> list[dict[str, Any]]:
-        """Trả về danh sách biển số phát hiện được trên một ảnh BGR."""
+        """Dự đoán và nhận diện toàn bộ biển số xe xuất hiện trong ảnh BGR.
+
+        Args:
+            image_bgr (np.ndarray): Mảng ảnh BGR (OpenCV format).
+            confidence (float | None): Độ tin cậy đè tùy chọn.
+
+        Returns:
+            list[dict[str, Any]]: Danh sách kết quả nhận diện từng biển số.
+        """
         if image_bgr is None or image_bgr.size == 0:
-            raise ValueError("Ảnh đầu vào rỗng")
+            raise ValueError("Ảnh đầu vào bị rỗng.")
         detection_confidence = self.config.detection_confidence if confidence is None else confidence
         if not 0 <= detection_confidence <= 1:
-            raise ValueError("confidence phải nằm trong [0, 1]")
+            raise ValueError("Tham số 'confidence' phải nằm trong khoảng [0, 1].")
 
         started_at = perf_counter()
         result = self.detector.predict(
@@ -120,21 +158,37 @@ class LicensePlateRecognizer:
         image_path: str | Path,
         output_path: str | Path | None = None,
     ) -> list[dict[str, Any]]:
-        """Đọc ảnh từ ổ đĩa, nhận diện và tùy chọn lưu ảnh minh họa."""
+        """Đọc ảnh từ đĩa cứng, chạy dự đoán và tùy chọn lưu ảnh vẽ kết quả.
+
+        Args:
+            image_path (str | Path): Đường dẫn tệp ảnh nguồn.
+            output_path (str | Path | None): Đường dẫn xuất ảnh kết quả minh họa (nếu có).
+
+        Returns:
+            list[dict[str, Any]]: Danh sách dự đoán biển số.
+        """
         image = cv2.imread(str(image_path))
         if image is None:
-            raise ValueError(f"Không đọc được ảnh: {image_path}")
+            raise ValueError(f"Không đọc được tệp ảnh từ đĩa: {image_path}")
         predictions = self.predict(image)
         if output_path:
             annotated = draw_predictions(image, predictions)
             Path(output_path).parent.mkdir(parents=True, exist_ok=True)
             if not cv2.imwrite(str(output_path), annotated):
-                raise OSError(f"Không ghi được ảnh kết quả: {output_path}")
+                raise OSError(f"Không thể ghi ảnh kết quả ra tệp: {output_path}")
         return predictions
 
 
 def draw_predictions(image: np.ndarray, predictions: list[dict[str, Any]]) -> np.ndarray:
-    """Vẽ bounding box và chuỗi biển số lên bản sao của ảnh."""
+    """Vẽ Bounding Box màu xanh lục và chuỗi ký tự biển số nhận dạng lên bản sao của ảnh gốc.
+
+    Args:
+        image (np.ndarray): Ảnh BGR gốc.
+        predictions (list[dict[str, Any]]): Danh sách kết quả dự đoán từ pipeline.
+
+    Returns:
+        np.ndarray: Ảnh mới đã được vẽ trực quan kết quả.
+    """
     annotated = image.copy()
     for prediction in predictions:
         x1, y1, x2, y2 = prediction["box"]

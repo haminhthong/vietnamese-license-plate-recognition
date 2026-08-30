@@ -1,27 +1,38 @@
-"""Kiểm tra dữ liệu YOLO và tạo split không rò rỉ giữa các nhóm nguồn."""
+"""Kiểm tra dữ liệu YOLOv8 và tạo tập phân chia Group-Safe Split không rò rỉ giữa các nhóm nguồn."""
 
 import argparse
+import logging
 from pathlib import Path
 
 from src.dataset import audit_manifest, collect_manifest, find_group_safe_split, materialize_split
 from src.io_utils import write_json
 
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+logger = logging.getLogger(__name__)
+
 
 def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--source", type=Path, required=True, help="Thư mục chứa train/valid/test")
-    parser.add_argument("--output", type=Path, default=Path("dataset/grouped"))
-    parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--audit-output", type=Path, default=Path("artifacts/dataset_audit.json"))
+    """Thu thập manifest dữ liệu, kiểm toán trùng lặp, chia tập Group-Safe Split và tạo data.yaml."""
+    parser = argparse.ArgumentParser(description="Chia tập dữ liệu YOLOv8 Group-Safe Split chống rò rỉ.")
+    parser.add_argument("--source", type=Path, required=True, help="Thư mục chứa dữ liệu gốc train/valid/test")
+    parser.add_argument("--output", type=Path, default=Path("dataset/grouped"), help="Thư mục xuất dữ liệu split mới")
+    parser.add_argument("--seed", type=int, default=42, help="Hạt giống ngẫu nhiên")
+    parser.add_argument("--audit-output", type=Path, default=Path("artifacts/dataset_audit.json"), help="Thư mục lưu báo cáo audit JSON")
     args = parser.parse_args()
+
+    logger.info("Thu thập manifest dữ liệu từ thư mục: %s", args.source)
     manifest = collect_manifest(args.source)
     audit = audit_manifest(manifest)
     write_json(args.audit_output, audit)
-    print(args.audit_output.read_text(encoding="utf-8"))
+    logger.info("Báo cáo audit dữ liệu đã được lưu tại: %s", args.audit_output)
+
+    logger.info("Đang thực hiện thuật toán tìm cách chia Group-Safe Split...")
     split = find_group_safe_split(manifest, seed=args.seed)
     yaml_path = materialize_split(split, args.output)
-    print(split.groupby("split").agg(images=("image_path", "count"), objects=("n_objects", "sum")))
-    print(f"Tệp cấu hình dữ liệu: {yaml_path}")
+
+    summary = split.groupby("split").agg(images=("image_path", "count"), objects=("n_objects", "sum"))
+    logger.info("Bảng phân bổ tập dữ liệu mới:\n%s", summary)
+    logger.info("Tệp cấu hình dữ liệu YAML sẵn sàng: %s", yaml_path)
 
 
 if __name__ == "__main__":

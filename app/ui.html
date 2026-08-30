@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Vietnamese License Plate Recognition - Web Demo</title>
+    <style>
+        :root {
+            --bg-color: #0f172a;
+            --card-bg: #1e293b;
+            --card-border: #334155;
+            --text-primary: #f8fafc;
+            --text-secondary: #94a3b8;
+            --accent-color: #38bdf8;
+            --accent-hover: #0284c7;
+            --success-color: #22c55e;
+            --warning-color: #f59e0b;
+            --danger-color: #ef4444;
+            --radius: 12px;
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+        body { background-color: var(--bg-color); color: var(--text-primary); padding: 2rem 1rem; min-height: 100vh; }
+        .container { max-width: 1100px; margin: 0 auto; }
+        
+        header { text-align: center; margin-bottom: 2.5rem; }
+        header h1 { font-size: 2.2rem; font-weight: 700; color: var(--accent-color); margin-bottom: 0.5rem; }
+        header p { color: var(--text-secondary); font-size: 1rem; }
+
+        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; }
+        @media (max-width: 768px) { .grid { grid-template-columns: 1fr; } }
+
+        .card { background: var(--card-bg); border: 1px solid var(--card-border); border-radius: var(--radius); padding: 1.5rem; box-shadow: 0 4px 20px rgba(0,0,0,0.3); }
+        .card h2 { font-size: 1.25rem; font-weight: 600; margin-bottom: 1rem; display: flex; align-items: center; gap: 0.5rem; }
+
+        .upload-area { border: 2px dashed var(--card-border); border-radius: var(--radius); padding: 2.5rem 1.5rem; text-align: center; cursor: pointer; transition: all 0.2s ease; background: rgba(255,255,255,0.02); }
+        .upload-area:hover, .upload-area.dragover { border-color: var(--accent-color); background: rgba(56, 189, 248, 0.05); }
+        .upload-icon { font-size: 2.5rem; margin-bottom: 0.75rem; color: var(--accent-color); }
+        .upload-text { color: var(--text-secondary); font-size: 0.95rem; }
+        .upload-text span { color: var(--accent-color); font-weight: 600; }
+        input[type="file"] { display: none; }
+
+        .preview-container { position: relative; width: 100%; margin-top: 1rem; border-radius: var(--radius); overflow: hidden; display: none; }
+        .preview-container img, .preview-container canvas { width: 100%; height: auto; display: block; }
+
+        .results-container { display: flex; flex-direction: column; gap: 1rem; }
+        .badge { display: inline-block; padding: 0.25rem 0.6rem; font-size: 0.75rem; font-weight: 600; border-radius: 9999px; }
+        .badge-success { background: rgba(34, 197, 94, 0.2); color: var(--success-color); border: 1px solid var(--success-color); }
+        .badge-warning { background: rgba(245, 158, 11, 0.2); color: var(--warning-color); border: 1px solid var(--warning-color); }
+
+        .plate-card { background: rgba(255,255,255,0.03); border: 1px solid var(--card-border); border-radius: 8px; padding: 1rem; }
+        .plate-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem; }
+        .plate-number { font-family: monospace; font-size: 1.5rem; font-weight: 800; color: #facc15; letter-spacing: 2px; background: #000; padding: 0.4rem 0.8rem; border-radius: 6px; border: 2px solid #555; }
+        
+        .meta-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 0.5rem; margin-top: 0.75rem; font-size: 0.85rem; color: var(--text-secondary); }
+        .meta-item { background: rgba(0,0,0,0.2); padding: 0.4rem 0.6rem; border-radius: 4px; }
+        .meta-item strong { color: var(--text-primary); }
+
+        .loading { display: none; text-align: center; padding: 2rem; color: var(--text-secondary); }
+        .spinner { border: 3px solid rgba(255,255,255,0.1); border-top: 3px solid var(--accent-color); border-radius: 50%; width: 36px; height: 36px; animation: spin 1s linear infinite; margin: 0 auto 1rem; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+
+        .empty-state { text-align: center; color: var(--text-secondary); padding: 3rem 1rem; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Vietnamese License Plate Recognition</h1>
+            <p>Hệ thống nhận diện biển số xe Việt Nam End-to-End (YOLOv8 + EasyOCR + Post-processing)</p>
+        </header>
+
+        <div class="grid">
+            <!-- Cột trái: Tải ảnh & Preview -->
+            <div class="card">
+                <h2>📷 Ảnh Đầu Vào</h2>
+                <div class="upload-area" id="dropZone" onclick="document.getElementById('fileInput').click()">
+                    <div class="upload-icon">📤</div>
+                    <div class="upload-text">Nhấp để chọn ảnh hoặc <span>Kéo & Thả</span> tệp vào đây</div>
+                    <p style="font-size: 0.8rem; color: var(--text-secondary); margin-top: 0.5rem;">Hỗ trợ JPEG, PNG, WebP (Tối đa 10MB)</p>
+                </div>
+                <input type="file" id="fileInput" accept="image/jpeg,image/png,image/webp">
+
+                <div class="preview-container" id="previewContainer">
+                    <canvas id="canvas"></canvas>
+                </div>
+            </div>
+
+            <!-- Cột phải: Kết quả nhận diện -->
+            <div class="card">
+                <h2>🔍 Kết Quả Nhận Diện</h2>
+                
+                <div class="loading" id="loadingState">
+                    <div class="spinner"></div>
+                    <p>Đang phân tích hình ảnh và nhận diện biển số...</p>
+                </div>
+
+                <div id="resultsContent" class="results-container">
+                    <div class="empty-state" id="emptyState">
+                        <p>Vui lòng tải ảnh lên ở ô bên trái để nhận kết quả.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const fileInput = document.getElementById('fileInput');
+        const dropZone = document.getElementById('dropZone');
+        const previewContainer = document.getElementById('previewContainer');
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const loadingState = document.getElementById('loadingState');
+        const resultsContent = document.getElementById('resultsContent');
+        const emptyState = document.getElementById('emptyState');
+
+        ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+            dropZone.addEventListener(eventName, preventDefaults, false);
+        });
+
+        function preventDefaults(e) { e.preventDefault(); e.stopPropagation(); }
+
+        ['dragenter', 'dragover'].forEach(eventName => {
+            dropZone.addEventListener(eventName, () => dropZone.classList.add('dragover'), false);
+        });
+
+        ['dragleave', 'drop'].forEach(eventName => {
+            dropZone.addEventListener(eventName, () => dropZone.classList.remove('dragover'), false);
+        });
+
+        dropZone.addEventListener('drop', (e) => {
+            const dt = e.dataTransfer;
+            const files = dt.files;
+            if (files.length > 0) handleFile(files[0]);
+        });
+
+        fileInput.addEventListener('change', (e) => {
+            if (e.target.files.length > 0) handleFile(e.target.files[0]);
+        });
+
+        async function handleFile(file) {
+            if (!file.type.match('image.*')) {
+                alert('Vui lòng tải lên tệp hình ảnh hợp lệ (JPEG, PNG, WebP).');
+                return;
+            }
+
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                const img = new Image();
+                img.onload = function() {
+                    canvas.width = img.width;
+                    canvas.height = img.height;
+                    ctx.drawImage(img, 0, 0);
+                    previewContainer.style.display = 'block';
+                };
+                img.src = e.target.result;
+            };
+            reader.readAsDataURL(file);
+
+            // Gửi API nhận diện
+            await processImage(file);
+        }
+
+        async function processImage(file) {
+            loadingState.style.display = 'block';
+            emptyState.style.display = 'none';
+            resultsContent.querySelectorAll('.plate-card, .meta-item').forEach(el => el.remove());
+
+            const formData = new FormData();
+            formData.append('image', file);
+
+            try {
+                const response = await fetch('/predict', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                if (!response.ok) {
+                    const err = await response.json();
+                    throw new Error(err.detail || 'Lỗi xử lý API');
+                }
+
+                const data = await response.json();
+                renderResults(data);
+            } catch (err) {
+                alert('Lỗi: ' + err.message);
+                emptyState.style.display = 'block';
+            } finally {
+                loadingState.style.display = 'none';
+            }
+        }
+
+        function renderResults(data) {
+            if (!data.predictions || data.predictions.length === 0) {
+                resultsContent.innerHTML = '<div class="empty-state"><p>Không tìm thấy biển số xe nào trong hình ảnh.</p></div>';
+                return;
+            }
+
+            // Vẽ Bounding Boxes lên Canvas
+            ctx.lineWidth = Math.max(3, Math.round(canvas.width / 300));
+            ctx.strokeStyle = '#22c55e';
+            ctx.fillStyle = '#22c55e';
+            ctx.font = `bold ${Math.max(16, Math.round(canvas.width / 40))}px sans-serif`;
+
+            let html = `<div class="meta-item" style="margin-bottom: 1rem;">⏱️ Thời gian xử lý: <strong>${data.latency_ms.toFixed(1)} ms</strong> | Đã tìm thấy: <strong>${data.predictions.length} biển số</strong></div>`;
+
+            data.predictions.forEach((pred, index) => {
+                const [x1, y1, x2, y2] = pred.box;
+                const width = x2 - x1;
+                const height = y2 - y1;
+
+                // Vẽ hình chữ nhật
+                ctx.strokeRect(x1, y1, width, height);
+
+                // Vẽ label trên canvas
+                const label = pred.text || pred.raw_text || "Unrecognized";
+                ctx.fillRect(x1, Math.max(0, y1 - 30), ctx.measureText(label).width + 10, 30);
+                ctx.fillStyle = '#000000';
+                ctx.fillText(label, x1 + 5, Math.max(22, y1 - 8));
+                ctx.fillStyle = '#22c55e';
+
+                // Render Card Kết quả bên phải
+                html += `
+                    <div class="plate-card">
+                        <div class="plate-header">
+                            <div class="plate-number">${pred.text || pred.raw_text || "[KHÔNG ĐỌC ĐƯỢC]"}</div>
+                            <span class="badge ${pred.format_valid ? 'badge-success' : 'badge-warning'}">
+                                ${pred.format_valid ? 'Khớp mẫu chuẩn' : 'Chưa khớp mẫu'}
+                            </span>
+                        </div>
+                        <div class="meta-grid">
+                            <div class="meta-item">Độ tin cậy YOLO: <strong>${(pred.detection_confidence * 100).toFixed(1)}%</strong></div>
+                            <div class="meta-item">Độ tin cậy OCR: <strong>${(pred.ocr_confidence * 100).toFixed(1)}%</strong></div>
+                            <div class="meta-item">Bố cục suy luận: <strong>${pred.layout === '1_line' ? '1 Dòng (Biển dài)' : '2 Dòng (Xe máy/Vuông)'}</strong></div>
+                            <div class="meta-item">Nắn góc phối cảnh: <strong>${pred.rectified ? 'Đã nắn góc' : 'Crop gốc'}</strong></div>
+                            <div class="meta-item">Chuỗi OCR thô: <strong>${pred.raw_text || 'N/A'}</strong></div>
+                            <div class="meta-item">Biến thể ảnh chọn: <strong>${pred.variant || 'N/A'}</strong></div>
+                        </div>
+                    </div>
+                `;
+            });
+
+            resultsContent.innerHTML = html;
+        }
+    </script>
+</body>
+</html>

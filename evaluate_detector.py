@@ -1,6 +1,7 @@
-"""Đánh giá detector trên test split chưa dùng để tinh chỉnh mô hình."""
+"""Đánh giá mô hình detector YOLOv8 trên tập dữ liệu kiểm thử (test split) độc lập."""
 
 import argparse
+import logging
 from pathlib import Path
 
 import numpy as np
@@ -8,19 +9,27 @@ from ultralytics import YOLO
 
 from src.io_utils import write_json
 
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+logger = logging.getLogger(__name__)
+
 
 def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--weights", type=Path, required=True)
-    parser.add_argument("--data", type=Path, default=Path("data.yaml"))
-    parser.add_argument("--output", type=Path, default=Path("artifacts/detector_test_metrics.json"))
+    """Đánh giá độ chính xác Precision, Recall, mAP50, mAP50-95 của mô hình phát hiện biển số."""
+    parser = argparse.ArgumentParser(description="Đánh giá mô hình phát hiện biển số xe trên test split.")
+    parser.add_argument("--weights", type=Path, required=True, help="Đường dẫn tới tệp trọng số best.pt")
+    parser.add_argument("--data", type=Path, default=Path("data.yaml"), help="Đường dẫn tệp cấu hình data.yaml")
+    parser.add_argument("--output", type=Path, default=Path("artifacts/detector_test_metrics.json"), help="Đường dẫn lưu kết quả JSON")
     args = parser.parse_args()
+
+    logger.info("Đang thực hiện đánh giá detector trên tập kiểm thử test split...")
     metrics = YOLO(str(args.weights)).val(data=str(args.data), split="test", imgsz=640, batch=16)
+
     class_ids = np.asarray(metrics.box.ap_class_index, dtype=int)
     precision = np.asarray(metrics.box.p, dtype=float)
     recall = np.asarray(metrics.box.r, dtype=float)
     ap50 = np.asarray(metrics.box.ap50, dtype=float)
     ap = np.asarray(metrics.box.ap, dtype=float)
+
     per_class = [
         {
             "class_id": int(class_id),
@@ -32,17 +41,22 @@ def main() -> None:
         }
         for index, class_id in enumerate(class_ids)
     ]
+
     missing_classes = sorted(set(metrics.names) - set(map(int, class_ids)))
     if missing_classes:
-        raise RuntimeError(f"Test split không có dữ liệu đánh giá cho class: {missing_classes}")
+        raise RuntimeError(f"Tập kiểm thử test split thiếu dữ liệu cho các class: {missing_classes}")
 
     payload = {
-        "weights": str(args.weights), "precision": float(metrics.box.mp),
-        "recall": float(metrics.box.mr), "mAP50": float(metrics.box.map50),
-        "mAP50_95": float(metrics.box.map), "per_class": per_class,
+        "weights": str(args.weights),
+        "precision": float(metrics.box.mp),
+        "recall": float(metrics.box.mr),
+        "mAP50": float(metrics.box.map50),
+        "mAP50_95": float(metrics.box.map),
+        "per_class": per_class,
     }
     write_json(args.output, payload)
-    print(args.output.read_text(encoding="utf-8"))
+    logger.info("Kết quả đánh giá detector đã lưu tại: %s", args.output)
+    logger.info("mAP50: %.4f | mAP50-95: %.4f | Precision: %.4f | Recall: %.4f", payload["mAP50"], payload["mAP50_95"], payload["precision"], payload["recall"])
 
 
 if __name__ == "__main__":

@@ -1,4 +1,12 @@
-"""Tiền xử lý OCR và chuẩn hóa kết quả theo định dạng biển số Việt Nam."""
+"""Tiền xử lý ảnh biển số, trích xuất OCR và hậu xử lý khớp mẫu định dạng biển số xe Việt Nam.
+
+Module này chịu trách nhiệm:
+1. Xử lý nhiều biến thể ảnh (Gray, CLAHE, Otsu, Adaptive Threshold) để EasyOCR có tỷ lệ đọc cao nhất.
+2. Xác định bố cục biển 1 dòng (ô tô dài) hoặc 2 dòng (xe máy, ô tô ngắn) dựa trên aspect ratio.
+3. Sắp xếp các token nhận dạng được theo đúng thứ tự hình học (từ trên xuống dưới, từ trái sang phải).
+4. Chuẩn hóa chuỗi ký tự, thay thế các lỗi nhận dạng phổ biến (nhầm lẫn giữa 'O' và '0', 'B' và '8', 'I' và '1', v.v.).
+5. Khớp các mẫu định dạng biển số tiêu chuẩn Việt Nam để sửa lỗi tối ưu.
+"""
 
 from __future__ import annotations
 
@@ -8,33 +16,51 @@ import numpy as np
 
 from .rectification import rectify_plate
 
+# Bộ ký tự hợp lệ và phép thay thế chuẩn hóa
 ASCII_DIGITS = "0123456789"
 ASCII_LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 OCR_ALLOWLIST = f"{ASCII_DIGITS}{ASCII_LETTERS}-."
 VALID_LAYOUTS = {"1_line", "2_line"}
 
+# Từ điển thay thế ký tự nhầm lẫn giữa chữ cái và chữ số
 DIGIT_SUBSTITUTIONS = {
     "O": "0", "Q": "0", "D": "0", "I": "1", "L": "1", "Z": "2",
     "J": "3", "A": "4", "S": "5", "G": "6", "B": "8",
 }
 LETTER_SUBSTITUTIONS = {"0": "O", "1": "I", "2": "Z", "4": "A", "5": "S", "8": "B"}
 
-# D là chữ số, L là chữ cái Latin viết hoa. Có thể bổ sung mẫu cho các loại biển đặc biệt.
+# Các mẫu biển số Việt Nam tiêu chuẩn (D = Digit/Chữ số, L = Letter/Chữ cái Latin)
 PLATE_TEMPLATES = {
-    7: ["DDLDDDD"],
-    8: ["DDLDDDDD"],
-    9: ["DDLDDDDDD", "DDLLDDDDD"],
-    10: ["DDLLDDDDDD"],
+    7: ["DDLDDDD"],                  # Ví dụ: 51F1234 (7 ký tự)
+    8: ["DDLDDDDD"],                 # Ví dụ: 51F12345 (8 ký tự)
+    9: ["DDLDDDDDD", "DDLLDDDDD"],   # Ví dụ: 51F123456 hoặc 51AB12345 (9 ký tự)
+    10: ["DDLLDDDDDD"],              # Ví dụ: 51AB123456 (10 ký tự)
 }
 
 
 def normalize_plate_text(text: str) -> str:
-    """Chuẩn hóa về chữ Latin viết hoa và chữ số ASCII."""
+    """Chuẩn hóa chuỗi ký tự: Chuyển thành viết hoa và loại bỏ các ký tự không thuộc ASCII chữ cái/số.
+
+    Args:
+        text (str): Chuỗi đầu vào.
+
+    Returns:
+        str: Chuỗi chỉ chứa chữ cái Latin viết hoa A-Z và chữ số 0-9.
+    """
     allowed = set(ASCII_DIGITS + ASCII_LETTERS)
     return "".join(character for character in str(text).upper() if character in allowed)
 
 
 def fit_plate_template(raw_text: str, template: str) -> dict[str, Any] | None:
+    """Khớp chuỗi văn bản nhận dạng với một template mẫu và tính toán chi phí sửa lỗi (correction cost).
+
+    Args:
+        raw_text (str): Chuỗi OCR thô đã chuẩn hóa.
+        template (str): Chuỗi mẫu quy định dạng 'DDLDDDD' (D: Chữ số, L: Chữ cái).
+
+    Returns:
+        dict[str, Any] | None: Kết quả sau khi sửa lỗi hoặc None nếu không khớp độ dài.
+    """
     raw_text = normalize_plate_text(raw_text)
     if len(raw_text) != len(template):
         return None
@@ -54,6 +80,14 @@ def fit_plate_template(raw_text: str, template: str) -> dict[str, Any] | None:
 
 
 def validate_and_correct_plate(raw_text: str) -> dict[str, Any]:
+    """Kiểm tra tính hợp lệ và tự động hiệu chỉnh kết quả OCR theo các quy tắc định dạng biển số xe.
+
+    Args:
+        raw_text (str): Chuỗi ký tự nhận dạng thô.
+
+    Returns:
+        dict[str, Any]: Kết quả chi tiết bao gồm chuỗi thô, chuỗi đã sửa, cờ format_valid và chi phí sửa.
+    """
     normalized = normalize_plate_text(raw_text)
     candidates = [
         result
@@ -62,14 +96,18 @@ def validate_and_correct_plate(raw_text: str) -> dict[str, Any]:
     ]
     if not candidates:
         return {
-            "raw_text": normalized, "text": normalized, "format_valid": False,
-            "template": None, "correction_cost": 0.0,
+            "raw_text": normalized,
+            "text": normalized,
+            "format_valid": False,
+            "template": None,
+            "correction_cost": 0.0,
         }
     best = min(candidates, key=lambda item: item["correction_cost"])
     return {"raw_text": normalized, "format_valid": True, **best}
 
 
 def _token_geometry(bbox: list[list[float]]) -> dict[str, float]:
+    """Trích xuất thông tin tọa độ tâm và chiều cao của bounding box token OCR."""
     points = np.asarray(bbox, dtype=float)
     min_x, min_y = points.min(axis=0)
     max_x, max_y = points.max(axis=0)
@@ -81,17 +119,27 @@ def _token_geometry(bbox: list[list[float]]) -> dict[str, float]:
 
 
 def order_ocr_tokens(ocr_results: list, layout: str, minimum_confidence: float = 0.20) -> tuple[str, float]:
-    """Lọc và sắp xếp token OCR theo bố cục biển số."""
+    """Lọc các token nhiễu và sắp xếp theo đúng thứ tự đọc dựa trên bố cục 1 dòng hoặc 2 dòng.
+
+    Args:
+        ocr_results (list): Kết quả trả về từ EasyOCR.
+        layout (str): Bố cục biển số ('1_line' hoặc '2_line').
+        minimum_confidence (float): Độ tin cậy tối thiểu để giữ lại token.
+
+    Returns:
+        tuple[str, float]: Cặp (chuỗi_ký_tự_hoàn_chỉnh, độ_tin_cậy_trung_bình).
+    """
     if layout not in VALID_LAYOUTS:
         raise ValueError(f"Bố cục không hợp lệ: {layout}")
     if not 0 <= minimum_confidence <= 1:
-        raise ValueError("minimum_confidence phải nằm trong [0, 1]")
+        raise ValueError("minimum_confidence phải nằm trong khoảng [0, 1]")
     tokens = []
     for bbox, text, confidence in ocr_results:
         normalized = normalize_plate_text(text)
         if normalized and float(confidence) >= minimum_confidence:
             tokens.append({
-                "text": normalized, "confidence": float(confidence),
+                "text": normalized,
+                "confidence": float(confidence),
                 **_token_geometry(bbox),
             })
     if not tokens:
@@ -116,7 +164,7 @@ def order_ocr_tokens(ocr_results: list, layout: str, minimum_confidence: float =
 
 
 def _order_two_line_tokens(tokens: list[dict[str, Any]], median_height: float) -> list[dict[str, Any]]:
-    """Tách token thành hai hàng rồi đọc từ trái sang phải, trên xuống dưới."""
+    """Phân tách các token thành 2 hàng (trên/dưới) và sắp xếp từng hàng từ trái sang phải."""
     sorted_by_y = sorted(tokens, key=lambda token: token["center_y"])
     gaps = [
         sorted_by_y[index + 1]["center_y"] - sorted_by_y[index]["center_y"]
@@ -142,7 +190,14 @@ def _order_two_line_tokens(tokens: list[dict[str, Any]], median_height: float) -
 
 
 def preprocess_plate_variants(crop_bgr: np.ndarray) -> dict[str, np.ndarray]:
-    """Tạo các biến thể ảnh để OCR chọn kết quả tốt nhất."""
+    """Tạo ra 4 biến thể ảnh tiền xử lý (Gray, CLAHE, Otsu, Adaptive Threshold) để tăng khả năng đọc OCR.
+
+    Args:
+        crop_bgr (np.ndarray): Ảnh crop vùng biển số gốc.
+
+    Returns:
+        dict[str, np.ndarray]: Từ điển chứa các ảnh biến thể.
+    """
     import cv2
 
     if crop_bgr is None or crop_bgr.size == 0:
@@ -160,7 +215,15 @@ def preprocess_plate_variants(crop_bgr: np.ndarray) -> dict[str, np.ndarray]:
 
 
 def infer_plate_layout(crop_bgr: np.ndarray, wide_ratio_threshold: float = 2.20) -> str:
-    """Ước lượng biển một hoặc hai dòng bằng tỷ lệ khung ảnh."""
+    """Ước lượng tự động biển số là 1 dòng hay 2 dòng dựa trên tỷ lệ chiều rộng / chiều cao.
+
+    Args:
+        crop_bgr (np.ndarray): Ảnh crop biển số.
+        wide_ratio_threshold (float): Ngưỡng tỷ lệ khung hình (mặc định: 2.20).
+
+    Returns:
+        str: '1_line' nếu là biển dài hoặc '2_line' nếu là biển vuông/gần vuông.
+    """
     if wide_ratio_threshold <= 0:
         raise ValueError("wide_ratio_threshold phải lớn hơn 0")
     if crop_bgr is None or crop_bgr.size == 0:
@@ -170,7 +233,16 @@ def infer_plate_layout(crop_bgr: np.ndarray, wide_ratio_threshold: float = 2.20)
 
 
 def read_plate(reader: Any, crop_bgr: np.ndarray, layout: str = "auto") -> dict[str, Any]:
-    """Chỉnh phối cảnh, chạy nhiều biến thể OCR và chọn ứng viên tốt nhất."""
+    """Thực hiện quy trình đọc biển số hoàn chỉnh: Nắn góc, tiền xử lý đa biến thể, OCR và sửa lỗi theo mẫu.
+
+    Args:
+        reader (Any): Đối tượng EasyOCR Reader.
+        crop_bgr (np.ndarray): Ảnh crop biển số BGR.
+        layout (str): Bố cục ('auto', '1_line', '2_line').
+
+    Returns:
+        dict[str, Any]: Thông tin chi tiết kết quả đọc biển số tốt nhất.
+    """
     if layout != "auto" and layout not in VALID_LAYOUTS:
         raise ValueError(f"Bố cục không hợp lệ: {layout}")
     rectified_crop, rectified = rectify_plate(crop_bgr)
@@ -185,8 +257,12 @@ def read_plate(reader: Any, crop_bgr: np.ndarray, layout: str = "auto") -> dict[
         validated = validate_and_correct_plate(raw_text)
         score = confidence + (0.20 if validated["format_valid"] else 0.0) - 0.07 * validated["correction_cost"]
         candidates.append({
-            **validated, "ocr_confidence": confidence, "layout": resolved_layout, "rectified": rectified,
-            "variant": variant_name, "score": score,
+            **validated,
+            "ocr_confidence": confidence,
+            "layout": resolved_layout,
+            "rectified": rectified,
+            "variant": variant_name,
+            "score": score,
         })
     if candidates:
         return max(candidates, key=lambda item: item["score"])

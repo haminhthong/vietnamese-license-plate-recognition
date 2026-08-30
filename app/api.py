@@ -1,38 +1,89 @@
-"""FastAPI phục vụ nhận diện biển số từ ảnh tải lên."""
+"""FastAPI dịch vụ API nhận diện biển số xe và giao diện Web UI trực quan.
+
+Module này cung cấp các REST API endpoints:
+- `GET /`: Trang chủ Web UI Dashboard trực quan.
+- `GET /health`: Kiểm tra trạng thái sức khỏe ứng dụng và trọng số mô hình.
+- `POST /predict`: Nhận tệp ảnh tải lên và trả về kết quả định vị & OCR biển số.
+"""
 
 import os
 from functools import lru_cache
+from pathlib import Path
+from typing import Annotated
 
 import cv2
 import numpy as np
 from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi.responses import FileResponse, HTMLResponse
 
 from src.pipeline import LicensePlateRecognizer
 
-app = FastAPI(title="Vietnamese License Plate Recognition", version="1.0.0")
+from .schemas import HealthResponse, PredictionResponse
+
+app = FastAPI(
+    title="Vietnamese License Plate Recognition API",
+    description="REST API và Web Dashboard giao diện cho hệ thống nhận diện biển số xe Việt Nam.",
+    version="1.0.0",
+)
+
+SUPPORTED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp"}
+MAX_UPLOAD_BYTES = 10 * 1024 * 1024
+UI_HTML_PATH = Path(__file__).parent / "ui.html"
+
+
+def model_weights_path() -> Path:
+    """Lấy đường dẫn tệp trọng số mô hình từ biến môi trường MODEL_WEIGHTS hoặc mặc định."""
+    return Path(os.getenv("MODEL_WEIGHTS", "models/best.pt"))
 
 
 @lru_cache(maxsize=1)
 def get_recognizer() -> LicensePlateRecognizer:
-    weights = os.getenv("MODEL_WEIGHTS", "models/best.pt")
+    """Khởi tạo và lưu cache bộ đối tượng LicensePlateRecognizer."""
+    weights = model_weights_path()
+    if not weights.is_file():
+        raise FileNotFoundError(f"Không tìm thấy tệp trọng số mô hình YOLOv8: {weights}")
     return LicensePlateRecognizer(weights)
 
 
-@app.get("/health")
-def health() -> dict[str, str]:
-    return {"status": "ok"}
+@app.get("/", response_class=HTMLResponse, include_in_schema=False)
+def index() -> FileResponse:
+    """Phục vụ trang giao diện Web UI trực quan cho trình duyệt."""
+    if not UI_HTML_PATH.is_file():
+        raise HTTPException(status_code=404, detail="Không tìm thấy tệp giao diện Web UI (app/ui.html).")
+    return FileResponse(UI_HTML_PATH)
 
 
-@app.post("/predict")
-async def predict(image: UploadFile = File(...)) -> dict:
-    if image.content_type not in {"image/jpeg", "image/png", "image/webp"}:
-        raise HTTPException(status_code=415, detail="Chỉ hỗ trợ JPEG, PNG hoặc WebP")
+@app.get("/health", response_model=HealthResponse)
+def health() -> HealthResponse:
+    """Kiểm tra trạng thái sức khỏe dịch vụ và khả năng kết nối mô hình trọng số."""
+    weights = model_weights_path()
+    return HealthResponse(
+        status="ok" if weights.is_file() else "model_missing",
+        model_weights=str(weights),
+        model_available=weights.is_file(),
+    )
+
+
+@app.post("/predict", response_model=PredictionResponse)
+async def predict(image: Annotated[UploadFile, File()]) -> PredictionResponse:
+    """Nhận tệp ảnh tải lên (JPEG/PNG/WebP max 10MB) và thực hiện nhận diện biển số end-to-end."""
+    if image.content_type not in SUPPORTED_IMAGE_TYPES:
+        raise HTTPException(status_code=415, detail="Chỉ hỗ trợ các định dạng ảnh JPEG, PNG hoặc WebP.")
     payload = await image.read()
-    if len(payload) > 10 * 1024 * 1024:
-        raise HTTPException(status_code=413, detail="Ảnh vượt quá giới hạn 10 MB")
+    if not payload:
+        raise HTTPException(status_code=400, detail="Tệp ảnh tải lên bị rỗng.")
+    if len(payload) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="Dung lượng ảnh vượt quá giới hạn tối đa 10 MB.")
     decoded = cv2.imdecode(np.frombuffer(payload, dtype=np.uint8), cv2.IMREAD_COLOR)
     if decoded is None:
-        raise HTTPException(status_code=400, detail="Dữ liệu ảnh không hợp lệ")
-    recognizer = get_recognizer()
+        raise HTTPException(status_code=400, detail="Dữ liệu tệp không phải là hình ảnh hợp lệ.")
+    try:
+        recognizer = get_recognizer()
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
     predictions = recognizer.predict(decoded)
-    return {"filename": image.filename, "latency_ms": recognizer.last_latency_ms, "predictions": predictions}
+    return PredictionResponse(
+        filename=image.filename,
+        latency_ms=recognizer.last_latency_ms,
+        predictions=predictions,
+    )

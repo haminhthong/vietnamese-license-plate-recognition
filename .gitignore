@@ -18,4 +18,6 @@ artifacts/
 *.png
 !docs/*.png
 models/
+.pytest_tmp/
+.ruff_cache/
 .coverage
