@@ -6,7 +6,6 @@ nhận dạng ký tự và ghi đè kết quả lên ảnh minh họa.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from pathlib import Path
 from time import perf_counter
 from typing import Any
@@ -14,37 +13,11 @@ from typing import Any
 import cv2
 import numpy as np
 
+from .config import RecognitionConfig
+from .io_utils import read_image
 from .ocr import read_plate
 
 Box = tuple[int, int, int, int]
-
-
-@dataclass(frozen=True)
-class RecognitionConfig:
-    """Các thông số cấu hình thống nhất cho bước phát hiện (detector) và cắt vùng ảnh biển số.
-
-    Attributes:
-        detection_confidence (float): Ngưỡng độ tin cậy tối thiểu của YOLOv8 (mặc định: 0.25).
-        nms_iou (float): Ngưỡng NMS IoU loại bỏ bounding box trùng lặp (mặc định: 0.60).
-        image_size (int): Kích thước ảnh resize đầu vào mô hình YOLO (mặc định: 640).
-        padding_ratio (float): Tỷ lệ đệm mở rộng lề khi cắt biển số (mặc định: 0.05 tức 5%).
-    """
-
-    detection_confidence: float = 0.25
-    nms_iou: float = 0.60
-    image_size: int = 640
-    padding_ratio: float = 0.05
-
-    def __post_init__(self) -> None:
-        """Kiểm tra tính hợp lệ của các giá trị tham số cấu hình."""
-        if not 0 <= self.detection_confidence <= 1:
-            raise ValueError("Tham số 'detection_confidence' phải nằm trong khoảng [0, 1].")
-        if not 0 <= self.nms_iou <= 1:
-            raise ValueError("Tham số 'nms_iou' phải nằm trong khoảng [0, 1].")
-        if self.image_size <= 0:
-            raise ValueError("Tham số 'image_size' phải lớn hơn 0.")
-        if self.padding_ratio < 0:
-            raise ValueError("Tham số 'padding_ratio' không được nhỏ hơn 0.")
 
 
 def crop_with_padding(image: np.ndarray, box: Box, padding_ratio: float = 0.05) -> tuple[np.ndarray, Box]:
@@ -144,7 +117,7 @@ class LicensePlateRecognizer:
                 "class_id": class_id,
                 "detector_class": result.names.get(class_id, "unknown"),
                 "detection_confidence": float(box.conf.item()),
-                **read_plate(self.reader, crop),
+                **read_plate(self.reader, crop, config=self.config),
             })
 
         elapsed_ms = (perf_counter() - started_at) * 1_000
@@ -167,9 +140,7 @@ class LicensePlateRecognizer:
         Returns:
             list[dict[str, Any]]: Danh sách dự đoán biển số.
         """
-        image = cv2.imread(str(image_path))
-        if image is None:
-            raise ValueError(f"Không đọc được tệp ảnh từ đĩa: {image_path}")
+        image = read_image(image_path, "tệp ảnh từ đĩa")
         predictions = self.predict(image)
         if output_path:
             annotated = draw_predictions(image, predictions)

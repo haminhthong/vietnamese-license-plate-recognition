@@ -6,6 +6,7 @@ Module này cung cấp các REST API endpoints:
 - `POST /predict`: Nhận tệp ảnh tải lên và trả về kết quả định vị & OCR biển số.
 """
 
+import asyncio
 import os
 from functools import lru_cache
 from pathlib import Path
@@ -18,7 +19,7 @@ from fastapi.responses import FileResponse, HTMLResponse
 
 from src.pipeline import LicensePlateRecognizer
 
-from .schemas import HealthResponse, PredictionResponse
+from .schemas import HealthResponse, LivenessResponse, PredictionResponse, ReadinessResponse
 
 app = FastAPI(
     title="Vietnamese License Plate Recognition API",
@@ -29,6 +30,7 @@ app = FastAPI(
 SUPPORTED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp"}
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 UI_HTML_PATH = Path(__file__).parent / "ui.html"
+INFERENCE_SEMAPHORE = asyncio.Semaphore(4)
 
 
 def model_weights_path() -> Path:
@@ -64,6 +66,22 @@ def health() -> HealthResponse:
     )
 
 
+@app.get("/health/live", response_model=LivenessResponse)
+def health_live() -> LivenessResponse:
+    """Kiểm tra tiến trình dịch vụ API còn sống (Liveness Probe)."""
+    return LivenessResponse(status="live")
+
+
+@app.get("/health/ready", response_model=ReadinessResponse)
+def health_ready() -> ReadinessResponse:
+    """Kiểm tra mô hình đã nạp và dịch vụ sẵn sàng nhận yêu cầu (Readiness Probe)."""
+    weights = model_weights_path()
+    available = weights.is_file()
+    if not available:
+        raise HTTPException(status_code=503, detail="Dịch vụ chưa sẵn sàng do thiếu trọng số mô hình.")
+    return ReadinessResponse(status="ready", model_available=True)
+
+
 @app.post("/predict", response_model=PredictionResponse)
 async def predict(image: Annotated[UploadFile, File()]) -> PredictionResponse:
     """Nhận tệp ảnh tải lên (JPEG/PNG/WebP max 10MB) và thực hiện nhận diện biển số end-to-end."""
@@ -81,7 +99,13 @@ async def predict(image: Annotated[UploadFile, File()]) -> PredictionResponse:
         recognizer = get_recognizer()
     except FileNotFoundError as error:
         raise HTTPException(status_code=503, detail=str(error)) from error
-    predictions = recognizer.predict(decoded)
+
+    try:
+        async with INFERENCE_SEMAPHORE:
+            predictions = await asyncio.to_thread(recognizer.predict, decoded)
+    except Exception as error:
+        raise HTTPException(status_code=500, detail="Xảy ra lỗi trong quá trình thực thi suy luận mô hình.") from error
+
     return PredictionResponse(
         filename=image.filename,
         latency_ms=recognizer.last_latency_ms,

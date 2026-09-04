@@ -10,6 +10,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+import cv2
+import numpy as np
 import pandas as pd
 
 
@@ -58,6 +60,26 @@ def resolve_relative_path(path: str | Path, base_directory: Path) -> Path:
     """
     candidate = Path(path)
     return candidate if candidate.is_absolute() else base_directory / candidate
+
+
+def read_image(path: str | Path, description: str = "ảnh") -> np.ndarray:
+    """Đọc ảnh màu từ đĩa và báo lỗi rõ ràng nếu tệp không hợp lệ.
+
+    Args:
+        path (str | Path): Đường dẫn tới tệp ảnh.
+        description (str): Tên mô tả dùng trong thông báo lỗi.
+
+    Returns:
+        np.ndarray: Ảnh màu theo định dạng BGR của OpenCV.
+
+    Raises:
+        ValueError: Nếu OpenCV không thể đọc tệp ảnh.
+    """
+    image_path = Path(path)
+    image = cv2.imread(str(image_path))
+    if image is None:
+        raise ValueError(f"Không đọc được {description}: {image_path}")
+    return image
 
 
 def write_json(path: str | Path, payload: dict[str, Any]) -> Path:

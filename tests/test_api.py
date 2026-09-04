@@ -50,3 +50,22 @@ def test_predict_rejects_empty_file():
         files={"image": ("test.jpg", b"", "image/jpeg")},
     )
     assert response.status_code == 400
+
+
+def test_health_live_and_ready_probes(monkeypatch, tmp_path):
+    """Kiểm tra các endpoints liveness và readiness (/health/live và /health/ready)."""
+    live_response = client.get("/health/live")
+    assert live_response.status_code == 200
+    assert live_response.json()["status"] == "live"
+
+    missing_weights = tmp_path / "missing.pt"
+    monkeypatch.setenv("MODEL_WEIGHTS", str(missing_weights))
+    ready_missing = client.get("/health/ready")
+    assert ready_missing.status_code == 503
+
+    weights = tmp_path / "best.pt"
+    weights.write_bytes(b"dummy")
+    monkeypatch.setenv("MODEL_WEIGHTS", str(weights))
+    ready_ok = client.get("/health/ready")
+    assert ready_ok.status_code == 200
+    assert ready_ok.json()["status"] == "ready"

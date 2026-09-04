@@ -22,6 +22,8 @@ class PlatePrediction(BaseModel):
     format_valid: bool = Field(description="Cờ báo chuỗi có khớp mẫu định dạng biển số Việt Nam hay không")
     template: str | None = Field(default=None, description="Mẫu định dạng đã khớp (ví dụ: 'DDLDDDDD')")
     correction_cost: float = Field(ge=0, description="Chi phí sửa lỗi ký tự (số lần thay thế)")
+    correction_applied: bool = Field(default=False, description="Cờ báo kết quả đã qua tự động hiệu chỉnh ký tự")
+    needs_manual_review: bool = Field(default=False, description="Cờ báo kết quả cần được kiểm tra thủ công")
     ocr_confidence: float = Field(ge=0, le=1, description="Độ tin cậy nhận dạng trung bình của EasyOCR")
     layout: str = Field(description="Bố cục biển số suy luận ('1_line' hoặc '2_line')")
     rectified: bool = Field(description="Cờ báo ảnh crop đã được nắn góc phối cảnh thành công hay chưa")
@@ -44,3 +46,16 @@ class HealthResponse(BaseModel):
     status: str = Field(description="Trạng thái dịch vụ ('ok' hoặc 'model_missing')")
     model_weights: str = Field(description="Đường dẫn tệp trọng số mô hình")
     model_available: bool = Field(description="Cờ báo tệp trọng số mô hình có sẵn sàng hay không")
+
+
+class LivenessResponse(BaseModel):
+    """Trạng thái liveness (kiểm tra tiến trình còn sống)."""
+
+    status: str = Field(default="live", description="Trạng thái dịch vụ đang chạy")
+
+
+class ReadinessResponse(BaseModel):
+    """Trạng thái readiness (kiểm tra mô hình đã nạp và sẵn sàng nhận request)."""
+
+    status: str = Field(description="Trạng thái sẵn sàng ('ready' hoặc 'not_ready')")
+    model_available: bool = Field(description="Cờ báo tệp trọng số sẵn sàng")

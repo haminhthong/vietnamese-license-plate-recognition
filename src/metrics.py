@@ -88,3 +88,58 @@ def summarize_ocr(pairs: Iterable[tuple[str, str]]) -> dict[str, Any]:
         "cer": cer,
         "character_accuracy": max(0.0, 1.0 - cer),
     }
+
+
+def summarize_latencies(latencies_ms: Iterable[float]) -> dict[str, float]:
+    """Tính các chỉ số thống kê độ trễ xử lý (đơn vị: ms): Trung bình, P50, P95.
+
+    Args:
+        latencies_ms (Iterable[float]): Danh sách các giá trị độ trễ ms.
+
+    Returns:
+        dict[str, float]: Dictionary chứa mean_latency_ms, p50_latency_ms, p95_latency_ms.
+    """
+    import numpy as np
+
+    values = [float(item) for item in latencies_ms]
+    if not values:
+        return {"mean_latency_ms": 0.0, "p50_latency_ms": 0.0, "p95_latency_ms": 0.0}
+    return {
+        "mean_latency_ms": float(np.mean(values)),
+        "p50_latency_ms": float(np.percentile(values, 50)),
+        "p95_latency_ms": float(np.percentile(values, 95)),
+    }
+
+
+def match_ground_truth_boxes(
+    predictions: list[dict[str, Any]],
+    ground_truths: Any,
+    iou_threshold: float = 0.5,
+) -> list[dict[str, Any]]:
+    """Ghép nối các bounding box ground truth với các dự đoán từ pipeline dựa theo chỉ số IoU cao nhất.
+
+    Args:
+        predictions (list[dict[str, Any]]): Danh sách các box dự đoán.
+        ground_truths (Any): Iterative DataFrame các nhãn thực tế chứa x1, y1, x2, y2, plate_text.
+        iou_threshold (float): Ngưỡng IoU tối thiểu để coi là khớp.
+
+    Returns:
+        list[dict[str, Any]]: Danh sách các kết quả khớp nối.
+    """
+    unused = set(range(len(predictions)))
+    matched_results = []
+    for truth in ground_truths.itertuples(index=False):
+        truth_box = (truth.x1, truth.y1, truth.x2, truth.y2)
+        candidates = [(index, box_iou(truth_box, predictions[index]["box"])) for index in unused]
+        prediction_index, best_iou = max(candidates, key=lambda item: item[1], default=(None, 0.0))
+        matched = prediction_index is not None and best_iou >= iou_threshold
+        prediction = predictions[prediction_index] if matched else {"raw_text": "", "text": ""}
+        if matched:
+            unused.remove(prediction_index)
+        matched_results.append({
+            "truth": truth,
+            "prediction": prediction,
+            "matched": matched,
+            "iou": best_iou,
+        })
+    return matched_results

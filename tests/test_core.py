@@ -5,7 +5,13 @@ import pandas as pd
 import pytest
 
 from src.config import TrainingConfig
-from src.io_utils import require_columns, require_non_empty_text, resolve_relative_path, write_json
+from src.io_utils import (
+    read_image,
+    require_columns,
+    require_non_empty_text,
+    resolve_relative_path,
+    write_json,
+)
 from src.metrics import box_iou, levenshtein_distance, summarize_ocr
 from src.ocr import infer_plate_layout, normalize_plate_text, order_ocr_tokens, validate_and_correct_plate
 from src.pipeline import RecognitionConfig, crop_with_padding
@@ -96,3 +102,46 @@ def test_io_utils_helpers(tmp_path):
     base_dir = tmp_path / "project"
     resolved = resolve_relative_path("data/test.jpg", base_dir)
     assert resolved == base_dir / "data" / "test.jpg"
+
+    with pytest.raises(ValueError, match="Không đọc được ảnh kiểm thử"):
+        read_image(tmp_path / "missing.jpg", "ảnh kiểm thử")
+
+
+def test_error_analysis_classification():
+    """Kiểm tra logic phân loại các nhóm lỗi trong module error_analysis."""
+    from src.error_analysis import classify_error
+
+    assert classify_error("51F12345", "51F12345", "51F12345", detected=True, iou=0.8) == "correct"
+    assert classify_error("51F12345", "", "", detected=False, iou=0.0) == "false_negative"
+    assert classify_error("51F12345", "", "", detected=False, iou=0.3) == "wrong_box"
+    assert classify_error("51F12345", "51F12345", "51F12345", detected=True, iou=0.3) == "wrong_box"
+    assert classify_error("51F12345", "51F1234", "51F1234", detected=True, iou=0.8) == "missing_chars"
+    assert classify_error("51F12345", "51F123456", "51F123456", detected=True, iou=0.8) == "extra_chars"
+    assert classify_error("51F12345", "51F12346", "51F12346", detected=True, iou=0.8) == "char_confusion"
+    assert classify_error("51F12345", "51F12345", "51F12346", detected=True, iou=0.8) == "correction_error"
+
+
+def test_phash_helpers_and_dataset_audit():
+    """Kiểm tra thuật toán pHash và khoảng cách Hamming giữa hai chuỗi băm."""
+    from src.dataset import phash_hamming_distance
+
+    assert phash_hamming_distance("0000000000000000", "0000000000000000") == 0
+    assert phash_hamming_distance("ffffffffffffffff", "0000000000000000") == 64
+    assert phash_hamming_distance("000000000000000f", "0000000000000000") == 4
+
+
+def test_recognition_config_from_yaml_and_validation(tmp_path):
+    """Kiểm tra nạp RecognitionConfig từ tệp YAML và các giới hạn hợp lệ."""
+    yaml_file = tmp_path / "rec.yaml"
+    yaml_file.write_text("detection_confidence: 0.35\nnms_iou: 0.5\nimage_size: 320\n", encoding="utf-8")
+    config = RecognitionConfig.from_yaml(yaml_file)
+    assert config.detection_confidence == 0.35
+    assert config.nms_iou == 0.5
+    assert config.image_size == 320
+
+    with pytest.raises(ValueError):
+        RecognitionConfig(ocr_minimum_confidence=-0.1)
+    with pytest.raises(ValueError):
+        RecognitionConfig(correction_penalty=-0.1)
+    with pytest.raises(ValueError):
+        RecognitionConfig(single_variant_mode="khong_hop_le")

@@ -1,4 +1,4 @@
-path: /absolute/path/to/dataset/grouped
+path: dataset/grouped
 train: train/images
 val: val/images
 test: test/images

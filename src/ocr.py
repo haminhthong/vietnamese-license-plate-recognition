@@ -14,6 +14,7 @@ from typing import Any
 
 import numpy as np
 
+from .config import RecognitionConfig
 from .rectification import rectify_plate
 
 # Bộ ký tự hợp lệ và phép thay thế chuẩn hóa
@@ -79,14 +80,21 @@ def fit_plate_template(raw_text: str, template: str) -> dict[str, Any] | None:
     return {"text": "".join(output), "template": template, "correction_cost": correction_cost}
 
 
-def validate_and_correct_plate(raw_text: str) -> dict[str, Any]:
+def validate_and_correct_plate(
+    raw_text: str,
+    enable_correction: bool = True,
+    max_cost: float = 1.0,
+) -> dict[str, Any]:
     """Kiểm tra tính hợp lệ và tự động hiệu chỉnh kết quả OCR theo các quy tắc định dạng biển số xe.
 
     Args:
         raw_text (str): Chuỗi ký tự nhận dạng thô.
+        enable_correction (bool): Có bật tự động sửa ký tự nhầm lẫn hay không.
+        max_cost (float): Giới hạn chi phí hiệu chỉnh tối đa.
 
     Returns:
-        dict[str, Any]: Kết quả chi tiết bao gồm chuỗi thô, chuỗi đã sửa, cờ format_valid và chi phí sửa.
+        dict[str, Any]: Kết quả chi tiết bao gồm chuỗi thô, chuỗi đã sửa, cờ format_valid, cờ correction_applied,
+                        cờ needs_manual_review và chi phí sửa.
     """
     normalized = normalize_plate_text(raw_text)
     candidates = [
@@ -101,9 +109,33 @@ def validate_and_correct_plate(raw_text: str) -> dict[str, Any]:
             "format_valid": False,
             "template": None,
             "correction_cost": 0.0,
+            "correction_applied": False,
+            "needs_manual_review": True,
         }
+
     best = min(candidates, key=lambda item: item["correction_cost"])
-    return {"raw_text": normalized, "format_valid": True, **best}
+    if not enable_correction:
+        # Nếu tắt hiệu chỉnh template, giữ nguyên raw_text nhưng thông báo nếu raw_text vốn đã chuẩn format (cost == 0)
+        is_exact = best["correction_cost"] == 0.0
+        return {
+            "raw_text": normalized,
+            "text": normalized,
+            "format_valid": is_exact,
+            "template": best["template"] if is_exact else None,
+            "correction_cost": 0.0,
+            "correction_applied": False,
+            "needs_manual_review": not is_exact,
+        }
+
+    correction_applied = best["text"] != normalized
+    needs_manual_review = best["correction_cost"] > max_cost
+    return {
+        "raw_text": normalized,
+        "format_valid": True,
+        "correction_applied": correction_applied,
+        "needs_manual_review": needs_manual_review,
+        **best,
+    }
 
 
 def _token_geometry(bbox: list[list[float]]) -> dict[str, float]:
@@ -232,30 +264,67 @@ def infer_plate_layout(crop_bgr: np.ndarray, wide_ratio_threshold: float = 2.20)
     return "1_line" if width / max(1, height) >= wide_ratio_threshold else "2_line"
 
 
-def read_plate(reader: Any, crop_bgr: np.ndarray, layout: str = "auto") -> dict[str, Any]:
+def read_plate(
+    reader: Any,
+    crop_bgr: np.ndarray,
+    layout: str = "auto",
+    config: RecognitionConfig | None = None,
+) -> dict[str, Any]:
     """Thực hiện quy trình đọc biển số hoàn chỉnh: Nắn góc, tiền xử lý đa biến thể, OCR và sửa lỗi theo mẫu.
 
     Args:
         reader (Any): Đối tượng EasyOCR Reader.
         crop_bgr (np.ndarray): Ảnh crop biển số BGR.
         layout (str): Bố cục ('auto', '1_line', '2_line').
+        config (RecognitionConfig | None): Cấu hình nhận diện.
 
     Returns:
         dict[str, Any]: Thông tin chi tiết kết quả đọc biển số tốt nhất.
     """
     if layout != "auto" and layout not in VALID_LAYOUTS:
         raise ValueError(f"Bố cục không hợp lệ: {layout}")
-    rectified_crop, rectified = rectify_plate(crop_bgr)
-    resolved_layout = layout if layout in VALID_LAYOUTS else infer_plate_layout(rectified_crop)
+    cfg = config or RecognitionConfig()
+
+    if cfg.enable_rectification:
+        target_crop, rectified = rectify_plate(crop_bgr)
+    else:
+        target_crop, rectified = crop_bgr, False
+
+    resolved_layout = layout if layout in VALID_LAYOUTS else infer_plate_layout(target_crop, cfg.wide_ratio_threshold)
+
+    # Phân định biến thể ảnh sẽ nạp vào EasyOCR dựa theo cấu hình ablation
+    if cfg.single_variant_mode == "crop":
+        variants = {"crop": target_crop}
+    elif cfg.single_variant_mode == "gray":
+        all_vars = preprocess_plate_variants(target_crop)
+        variants = {"gray": all_vars.get("gray", target_crop)}
+    elif cfg.single_variant_mode and cfg.single_variant_mode in {"clahe", "otsu", "adaptive"}:
+        all_vars = preprocess_plate_variants(target_crop)
+        variants = {cfg.single_variant_mode: all_vars.get(cfg.single_variant_mode, target_crop)}
+    elif not cfg.enable_preprocessing_variants:
+        variants = {"crop": target_crop}
+    else:
+        variants = preprocess_plate_variants(target_crop)
+
     candidates = []
-    for variant_name, processed in preprocess_plate_variants(rectified_crop).items():
+    for variant_name, processed in variants.items():
         results = reader.readtext(
             processed, detail=1, paragraph=False,
             allowlist=OCR_ALLOWLIST,
         )
-        raw_text, confidence = order_ocr_tokens(results, resolved_layout)
-        validated = validate_and_correct_plate(raw_text)
-        score = confidence + (0.20 if validated["format_valid"] else 0.0) - 0.07 * validated["correction_cost"]
+        raw_text, confidence = order_ocr_tokens(
+            results, resolved_layout, minimum_confidence=cfg.ocr_minimum_confidence
+        )
+        validated = validate_and_correct_plate(
+            raw_text,
+            enable_correction=cfg.enable_template_correction,
+            max_cost=cfg.max_correction_cost,
+        )
+        score = (
+            confidence
+            + (cfg.valid_format_bonus if validated["format_valid"] else 0.0)
+            - cfg.correction_penalty * validated["correction_cost"]
+        )
         candidates.append({
             **validated,
             "ocr_confidence": confidence,
@@ -268,6 +337,7 @@ def read_plate(reader: Any, crop_bgr: np.ndarray, layout: str = "auto") -> dict[
         return max(candidates, key=lambda item: item["score"])
     return {
         "raw_text": "", "text": "", "format_valid": False, "template": None,
-        "correction_cost": 0.0, "ocr_confidence": 0.0, "layout": resolved_layout,
+        "correction_cost": 0.0, "correction_applied": False, "needs_manual_review": True,
+        "ocr_confidence": 0.0, "layout": resolved_layout,
         "variant": None, "score": 0.0, "rectified": rectified,
     }

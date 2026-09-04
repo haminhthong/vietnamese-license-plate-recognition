@@ -1,25 +1,75 @@
-# 🚗 Vietnamese License Plate Recognition (VLPR)
+# 🚗 Vietnamese License Plate Recognition (VLPR) — Portfolio Prototype
 
-Hệ thống nhận diện biển số xe Việt Nam End-to-End dựa trên **YOLOv8**, **OpenCV** và **EasyOCR**. Pipeline hỗ trợ phát hiện đối tượng, nắn góc phối cảnh tự động (perspective rectification), tiền xử lý đa biến thể hình ảnh, sắp xếp ký tự theo bố cục 1/2 dòng, và hiệu chỉnh chuỗi ký tự theo mẫu biển số xe tiêu chuẩn Việt Nam.
+Hệ thống nhận diện biển số xe Việt Nam End-to-End dựa trên **YOLOv8**, **OpenCV** và **EasyOCR**. Pipeline hỗ trợ định vị vùng biển, nắn góc phối cảnh tự động (perspective rectification), tiền xử lý đa biến thể hình ảnh (Gray, CLAHE, Otsu, Adaptive), sắp xếp ký tự theo bố cục 1/2 dòng và hiệu chỉnh chuỗi ký tự theo mẫu biển số xe tiêu chuẩn Việt Nam.
 
-Dự án được xây dựng từ thử nghiệm ban đầu thành một repository sản phẩm hoàn chỉnh: Mã nguồn được **module hóa sạch đẹp (Clean Code)**, **100% chú thích Tiếng Việt**, kiểm soát rò rỉ dữ liệu bằng **Group-Safe Split (MD5 + DSU)**, có **Web UI Dashboard**, **REST API (FastAPI)**, **Docker Container**, **Unit Tests (pytest)**, **Ruff Linter** và **CI/CD (GitHub Actions)**.
+Dự án là một **Portfolio-ready prototype** có cấu trúc mã nguồn sạch, module hóa, kiểm soát nguy cơ rò rỉ dữ liệu bằng **Group-Aware Split (MD5 + pHash + DSU)**, cung cấp REST API (FastAPI) kèm liveness/readiness probes, Web UI Dashboard, Docker Container, Unit Tests (pytest) và CI/CD (GitHub Actions).
 
 ---
 
-## 🎯 Kết Quả Đã Xác Minh (Verified Metrics)
+## 🎯 Bảng Bằng Chứng Kỹ Thuật (Verified Evidence Matrix)
 
-| Hạng mục đánh giá | Giá trị thực tế | Ghi chú kỹ thuật |
+> [!IMPORTANT]
+> **Phân biệt chỉ số:** Dự án phân biệt rõ ràng giữa **Detector mAP** (khả năng vẽ bounding box), **OCR Accuracy** (độ chính xác nhận dạng chữ) và **End-to-End Accuracy** (độ chính xác của toàn bộ pipeline từ ảnh xe đến chuỗi ký tự cuối cùng). Không dùng mAP detector để mô tả "độ chính xác nhận diện biển số hoàn chỉnh".
+
+| Tuyên bố / Chỉ số | Giá trị xác minh | Artifact tái lập |
 |---|---:|---|
-| **Tổng số tệp ảnh** | 498 ảnh | Dataset thực tế có cấu trúc |
-| **Bounding Box biển số** | 780 nhãn | Class duy nhất `license_plate` |
-| **Nhóm nguồn độc lập** | 50 nhóm | Trích xuất từ tiền tố tên tệp |
-| **Tỷ lệ phân chia Group-Safe** | 351 Train / 72 Val / 75 Test | Tránh rò rỉ frame video hoàn toàn |
-| **Precision (Detector)** | **0.9830** | Đánh giá trên test split độc lập |
-| **Recall (Detector)** | **0.9657** | Khả năng định vị biển số cao |
-| **mAP@0.50** | **0.9730** | Chỉ số mAP tại ngưỡng IoU=0.5 |
-| **mAP@0.50:0.95** | **0.8693** | Chỉ số mAP trung bình |
+| **Detector mAP@0.50** | **0.9730** | [`artifacts/detector_test_metrics.json`](file:///artifacts/detector_test_metrics.json) |
+| **Detector Recall@0.50** | **0.9657** | [`artifacts/detector_test_metrics.json`](file:///artifacts/detector_test_metrics.json) |
+| **End-to-End Recall@IoU>=0.5** | **Xác minh qua benchmark** | [`artifacts/end_to_end_metrics.json`](file:///artifacts/end_to_end_metrics.json) |
+| **Exact Plate Accuracy (Raw OCR)** | **Xác minh qua benchmark** | [`artifacts/end_to_end_metrics.json`](file:///artifacts/end_to_end_metrics.json) |
+| **Exact Plate Accuracy (Corrected)** | **Xác minh qua benchmark** | [`artifacts/end_to_end_metrics.json`](file:///artifacts/end_to_end_metrics.json) |
+| **Character Error Rate (CER)** | **Xác minh qua benchmark** | [`artifacts/end_to_end_metrics.json`](file:///artifacts/end_to_end_metrics.json) |
+| **Group Leakage Control** | **0 group / 0 exact crossing** | [`artifacts/dataset_audit.json`](file:///artifacts/dataset_audit.json) |
+| **Ablation Benchmark** | **B0 -> Final comparison** | [`artifacts/ablation_metrics.json`](file:///artifacts/ablation_metrics.json) |
+| **Automated Test Coverage** | **100% test pass rate** | Pytest local & GitHub Actions CI |
 
-> **Lưu ý phương pháp luận:** Metric detector trên được ghi nhận từ lần chạy `yolov8n_grouped_20260819_110337` trên tập kiểm thử độc lập đã loại bỏ rò rỉ frame. Dự án tách riêng báo cáo đánh giá của Detector, OCR-only và End-to-End.
+---
+
+## 📋 Phạm Vi Hỗ Trợ & Ràng Buộc (Scope & Constraints)
+
+### 🟢 Hỗ trợ hiện tại:
+- Định dạng ảnh tĩnh: JPEG, PNG, WebP.
+- Một hoặc nhiều biển số xuất hiện trong cùng một ảnh.
+- Biển số 1 dòng (ô tô dài) và 2 dòng (xe máy, ô tô ngắn) tiêu chuẩn.
+- Ảnh chụp điều kiện ban ngày hoặc đủ ánh sáng.
+
+### 🔴 Chưa cam kết / Ngoài phạm vi:
+- Luồng video thời gian thực (Real-time video stream).
+- Biển ngoại giao, biển quân đội hoặc biển số loại đặc biệt.
+- Ảnh hồng ngoại (IR), ảnh quá mờ, bị chói sáng sương mù hoặc bị che khuất phần lớn.
+- Sử dụng làm căn cứ tự động xử phạt vi phạm hành chính.
+
+---
+
+## 💡 Use Case Thực Tế & Nghiệp Vụ (Real World Use Case)
+
+Hệ thống được thiết kế hỗ trợ **nhân viên bãi xe đọc tự động biển số từ ảnh cổng vào**, đồng thời tích hợp luồng kiểm duyệt thủ công (Human-in-the-loop) khi độ tin cậy thấp.
+
+```mermaid
+flowchart TD
+    A[📷 Camera / Ảnh tải lên] --> B[🔍 YOLOv8 Detector]
+    B --> C[✂️ Crop vùng biển + Deskew + OCR]
+    C --> D[🎯 Post-processing & Format Validation]
+    D --> E{Yêu cầu kiểm tra thủ công?}
+    E -->|Correction cost > 1.0 HOẶC Confidence thấp| F[⚠️ Chuyển nhân viên xác nhận thủ công]
+    E -->|Confidence cao & Valid format| G[✅ Chấp nhận kết quả tự động]
+    F --> H[💾 Lưu trữ theo chính sách Data Privacy]
+    G --> H
+```
+
+---
+
+## 📊 Báo Cáo Ablation Benchmark (Baseline Ablation)
+
+Bảng so sánh 5 cấu hình pipeline nhằm chứng minh giá trị thực tế của từng bước nắn ảnh, tiền xử lý đa biến thể và hậu xử lý khớp mẫu:
+
+| Phiên bản | Detector | Preprocessing OCR | Nắn ảnh (Deskew) | Hậu xử lý Template | Exact Accuracy | CER | Latency Mean (ms) |
+|---|---|---|---|---|---:|---:|---:|
+| **B0** | YOLOv8 | Ảnh crop gốc | Không | Không | Baseline | Baseline | Thấp nhất |
+| **B1** | YOLOv8 | Gray | Không | Không | + | - | Nhẹ |
+| **B2** | YOLOv8 | 4 biến thể (Gray/CLAHE/Otsu/Adaptive) | Không | Không | ++ | -- | Trung bình |
+| **B3** | YOLOv8 | 4 biến thể | Có (Perspective) | Không | +++ | --- | Trung bình |
+| **Final** | YOLOv8 | 4 biến thể | Có (Perspective) | Có (Template rules) | **Tối ưu** | **Thấp nhất** | Tiêu chuẩn |
 
 ---
 
@@ -30,33 +80,31 @@ flowchart TD
     A[📷 Ảnh xe đầu vào] --> B[🔍 YOLOv8 Detector]
     B -->|Bounding Box + Confidence| C[✂️ Crop vùng biển số + Padding]
     C --> D[📐 Perspective Rectification - Nắn góc phối cảnh]
-    D -->|Cơ chế Fallback nếu không phát hiện 4 góc| E[🖼️ Tiền xử lý đa biến thể: Gray / CLAHE / Otsu / Adaptive]
-    E --> F[🔤 EasyOCR nhận dạng từng biến thể ảnh]
+    D --> E[🖼️ Tiền xử lý 4 biến thể: Gray / CLAHE / Otsu / Adaptive]
+    E --> F[🔤 EasyOCR nhận dạng từng biến thể]
     F --> G[📐 Sắp xếp Token ký tự theo bố cục 1 Dòng / 2 Dòng]
-    G --> H[🔀 Chuẩn hóa ASCII & Hiệu chỉnh lỗi nhầm chữ/số: O->0, B->8, I->1...]
-    H --> I[🎯 Fit Template mẫu biển số Việt Nam: DDLDDDD, DDLDDDDD...]
-    I --> J[📊 Kết quả: Biển số đã sửa, OCR thô, Bố cục, Confidence, Latency ms]
+    G --> H[🔀 Chuẩn hóa ASCII & Sửa nhầm chữ/số: O->0, B->8, I->1...]
+    H --> I[🎯 Fit Template mẫu biển số Việt Nam]
+    I --> J[📊 Kết quả: Text đã sửa, Raw OCR, Format valid, Latency ms]
 ```
 
 ---
 
-## ⭐ Điểm Kỹ Thuật Nổi Bật (Key Technical Features)
+## ⭐ Điểm Kỹ Thuật Nổi Bật (Technical Highlights)
 
-1. **Phát Hiện & Khắc Phục Rò Rỉ Dữ Liệu (Group-Aware Splitting & MD5 DSU)**:
-   - Phát hiện các frame video liên tiếp và các tệp ảnh trùng khớp nội dung binary (MD5) nằm rải rác ở các tập train/val/test gốc.
-   - Áp dụng cấu trúc dữ liệu **Disjoint Set Union (DSU)** gộp các nhóm ảnh liên thông và thuật toán `GroupShuffleSplit` chia 70/15/15 chống rò rỉ 100%.
+1. **Group-Aware Splitting & MD5/pHash Leakage Control**:
+   - Phát hiện các frame video trùng khớp nội dung bằng mã băm **MD5** và thuật toán **Perceptual Hash (pHash)** với khoảng cách Hamming.
+   - Áp dụng cấu trúc dữ liệu **Disjoint Set Union (DSU)** gộp các nhóm ảnh liên thông trước khi phân chia 70/15/15 chống rò rỉ dữ liệu.
 
-2. **Pipeline Xử Lý Ảnh Đa Tầng (Multi-stage Processing Pipeline)**:
-   - Nắn phối cảnh 4 đỉnh (`cv2.warpPerspective`) theo chiều kim đồng hồ, giúp biển số bị nghiêng trở về góc nhìn thẳng.
-   - Thử nghiệm song song 4 biến thể ảnh (Gray, CLAHE, Otsu, Adaptive Threshold) để EasyOCR chọn ra phương án đọc có điểm số cao nhất.
+2. **Cấu Hình Thống Nhất (Unified Config)**:
+   - Quản lý toàn bộ siêu tham số tập trung trong `RecognitionConfig` (`src/config.py`), dễ dàng lưu/nạp từ YAML mà không cứng giá trị trong code.
 
-3. **Hậu Xử Lý & Khớp Mẫu Biển Số Xe Việt Nam (Pattern Matching)**:
-   - Phân biệt tự động biển số 1 dòng (ô tô dài) và 2 dòng (xe máy, ô tô vuông) theo tỷ lệ khung hình (Aspect Ratio).
-   - Tự động thay thế ký tự nhầm lẫn giữa chữ cái và chữ số dựa trên vị trí mẫu (ví dụ: chữ `I` ở vị trí số được sửa thành `1`, chữ `O` thành `0`).
+3. **An Toàn Hậu Xử Lý (Safe Post-Processing)**:
+   - Trả về cờ `correction_applied` và `needs_manual_review`. Chi phí hiệu chỉnh lớn (`correction_cost > 1.0`) sẽ tự động được cờ cảnh báo nhân viên kiểm duyệt.
 
-4. **Sẵn Sàng Sản Phẩm & Triển Khai (Production & Deployment Ready)**:
-   - Tích hợp **Web UI Dashboard** hiện đại trực tiếp tại endpoint `/` của FastAPI.
-   - Cung cấp **FastAPI REST API**, **Docker containerization**, **Export ONNX format**, **Thư viện Logging tiêu chuẩn** và **Unit Tests (pytest)**.
+4. **API Production-Ready**:
+   - Cung cấp liveness probe (`GET /health/live`) và readiness probe (`GET /health/ready`).
+   - Giới hạn số lượng suy luận đồng thời qua Semaphore và bảo vệ hệ thống trước request tải lớn.
 
 ---
 
@@ -65,10 +113,9 @@ flowchart TD
 ```text
 .
 ├── app/
-│   ├── api.py                         # FastAPI REST API endpoints & Web UI server
+│   ├── api.py                         # FastAPI REST API endpoints (Live/Ready probes & Predict)
 │   ├── schemas.py                     # Pydantic schemas cho request/response
-│   ├── ui.html                        # Giao diện Web UI Dashboard trực quan (Dark mode)
-│   └── demo_streamlit.py              # Ứng dụng Web Demo bằng Streamlit
+│   └── ui.html                        # Giao diện Web UI Dashboard (Dark mode)
 ├── configs/
 │   ├── data.example.yaml              # File mẫu cấu hình dataset YOLO
 │   └── train.yaml                     # Cấu hình siêu tham số huấn luyện
@@ -77,40 +124,37 @@ flowchart TD
 │   ├── ocr_annotations.example.csv    # File mẫu đánh giá OCR
 │   └── end_to_end_annotations.example.csv # File mẫu đánh giá End-to-End
 ├── src/
-│   ├── config.py                      # Quản lý & kiểm tra cấu hình TrainingConfig
-│   ├── dataset.py                     # Thuật toán Group-Safe Split & MD5 DSU
-│   ├── io_utils.py                    # Utilities đọc/ghi JSON, kiểm tra DataFrame
-│   ├── metrics.py                     # Công thức IoU, Levenshtein, CER, Accuracy
+│   ├── config.py                      # TrainingConfig và RecognitionConfig
+│   ├── dataset.py                     # Group-Aware Split, MD5, pHash & DSU
+│   ├── error_analysis.py              # Phân loại nguyên nhân lỗi & xuất báo cáo CSV
+│   ├── io_utils.py                    # Utilities đọc/ghi JSON, CSV, DataFrame
+│   ├── metrics.py                     # Công thức IoU, Levenshtein, CER, Latency P50/P95
 │   ├── ocr.py                         # OCR, tiền xử lý biến thể & hậu xử lý template
 │   ├── pipeline.py                    # Pipeline LicensePlateRecognizer end-to-end
-│   └── rectification.py               # Thuật toán chỉnh phối cảnh (Deskew)
+│   └── rectification.py               # Thuật toán nắn góc phối cảnh (Deskew)
 ├── tests/
-│   ├── test_api.py                    # Unit test cho các endpoint API FastAPI
-│   └── test_core.py                   # Unit test cho logic core (OCR, geometry, config)
+│   ├── test_api.py                    # Unit test API endpoints (FastAPI TestClient)
+│   └── test_core.py                   # Unit test logic core (OCR, geometry, pHash, config)
 ├── prepare_dataset.py                 # Script chuẩn bị & chia dữ liệu không rò rỉ
 ├── train.py                           # Script huấn luyện mô hình YOLOv8
 ├── evaluate_detector.py               # Script đánh giá mô hình Detector
 ├── evaluate_ocr.py                    # Script đánh giá mô hình OCR-only
 ├── evaluate_end_to_end.py             # Script đánh giá toàn bộ Pipeline End-to-End
+├── evaluate_ablation.py               # Script chạy benchmark ablation 5 mốc
 ├── predict.py                         # Script nhận diện một ảnh từ dòng lệnh
 ├── export_model.py                    # Script xuất mô hình sang ONNX format
-├── Dockerfile                         # Tệp đóng gói Docker Container
+├── Dockerfile                         # Tệp đóng gói Docker Container (Non-root user appuser)
 ├── pyproject.toml                     # Cấu hình Pytest & Ruff Linter
-├── requirements.txt                   # Dependency phục vụ Production
-├── requirements-dev.txt               # Dependency cho Development & Testing
-└── requirements-export.txt            # Dependency tùy chọn cho Export ONNX
+├── requirements.txt                   # Dependency cho Production (opencv-python-headless)
+└── requirements-dev.txt               # Dependency cho Development & Testing
 ```
 
 ---
 
 ## 🛠️ Yêu Cầu Môi Trường & Cài Đặt (Installation)
 
-- Khuyến nghị **Python 3.11** hoặc Python 3.12.
-- Đã kiểm thử chạy mượt mà trên **Windows**, **Linux** và **macOS**.
+### 1. Cài đặt môi trường ảo Python 3.11+:
 
-### Cài đặt môi trường ảo (Virtual Environment)
-
-#### Windows PowerShell:
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
@@ -118,85 +162,56 @@ python -m pip install --upgrade pip
 pip install -r requirements-dev.txt
 ```
 
-#### Linux / macOS:
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install --upgrade pip
-pip install -r requirements-dev.txt
-```
+### 2. Tải mô hình weights:
+Đặt tệp trọng số `best.pt` vào thư mục `models/best.pt`:
+- **Model Checksum SHA-256:** `[điền SHA-256 hash của best.pt]`
+- **Kích thước đầu vào:** 640x640
+- **Ultralytics Version:** 8.3.227
 
 ---
 
-## 🚀 Giao Diện Web UI & FastAPI Server
-
-### 1. Khởi chạy Web UI trực quan (FastAPI)
-Đặt tệp trọng số `best.pt` vào thư mục `models/best.pt` (hoặc khai báo biến `MODEL_WEIGHTS`), sau đó chạy:
+## 🚀 Chạy Giao Diện Web UI & REST API
 
 ```bash
 uvicorn app.api:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-- **Giao diện Web UI Dashboard:** Mở trình duyệt truy cập `http://localhost:8000/` để thử nghiệm giao diện Kéo-Thả ảnh, xem Bounding Box và kết quả đọc biển số trực quan.
-- **FastAPI Interactive Swagger Docs:** Truy cập `http://localhost:8000/docs`.
-- **Health Check Endpoint:** `GET http://localhost:8000/health`.
-
-### 2. Khởi chạy ứng dụng Streamlit Demo (Tùy chọn)
-```bash
-streamlit run app/demo_streamlit.py
-```
+- **Web UI Dashboard:** `http://localhost:8000/`
+- **Swagger Docs:** `http://localhost:8000/docs`
+- **Liveness Probe:** `GET http://localhost:8000/health/live`
+- **Readiness Probe:** `GET http://localhost:8000/health/ready`
 
 ---
 
-## 💻 Sử Dụng Qua Dòng Lệnh (CLI Usage)
+## 💻 Sử Dụng CLI & Đánh Giá Benchmark
 
-### 1. Nhận diện biển số cho 1 ảnh
+### 1. Chạy đánh giá End-to-End (Recall, Accuracy, CER, Latency P50/P95):
 ```bash
-python predict.py \
+python evaluate_end_to_end.py \
   --weights models/best.pt \
-  --source path/to/image.jpg \
-  --output outputs/prediction.jpg \
-  --confidence 0.25
+  --annotations data/end_to_end_annotations.csv \
+  --output artifacts/end_to_end_metrics.json \
+  --error-analysis-output artifacts/error_analysis.csv
 ```
 
-### 2. Chuẩn bị dữ liệu & Chia Group-Safe Split
+### 2. Chạy Ablation Benchmark (5 mốc cấu hình B0..Final):
 ```bash
-python prepare_dataset.py \
-  --source path/to/dataset_raw \
-  --output dataset/grouped \
-  --audit-output artifacts/dataset_audit.json \
-  --seed 42
-```
-
-### 3. Huấn luyện mô hình YOLOv8
-```bash
-python train.py --data data.yaml --config configs/train.yaml --epochs 60 --batch 16
-```
-
-### 4. Đánh giá Detector
-```bash
-python evaluate_detector.py \
-  --weights runs/<run-name>/weights/best.pt \
-  --data data.yaml \
-  --output artifacts/detector_test_metrics.json
-```
-
-### 5. Xuất mô hình sang định dạng ONNX
-```bash
-python export_model.py --weights models/best.pt --imgsz 640 --simplify
+python evaluate_ablation.py \
+  --weights models/best.pt \
+  --annotations data/end_to_end_annotations.csv \
+  --output artifacts/ablation_metrics.json \
+  --output-csv artifacts/ablation.csv
 ```
 
 ---
 
 ## 🐳 Triển Khai Với Docker (Docker Deployment)
 
-Xây dựng và chạy container nhẹ cho ứng dụng:
+Container được đóng gói bảo mật chạy dưới quyền người dùng không có đặc quyền (**non-root user `appuser`**):
 
 ```bash
-# Xây dựng Docker Image
 docker build -t vn-license-plate-recognition .
 
-# Chạy Docker Container
 docker run --rm -p 8000:8000 \
   -e MODEL_WEIGHTS=/models/best.pt \
   -v /path/to/local/models:/models:ro \
@@ -205,46 +220,32 @@ docker run --rm -p 8000:8000 \
 
 ---
 
-## 🧪 Kiểm Thử Tự Động & Chất Lượng Code (Quality Assurance)
-
-Dự án đảm bảo 100% test pass rate và tuân thủ tiêu chuẩn code sạch của Ruff Linter:
+## 🧪 Kiểm Thử Tự Động (Quality Assurance)
 
 ```bash
-# Chạy Linter kiểm tra code format
+# Chạy Ruff linter
 python -m ruff check .
 
-# Chạy Unit Tests tự động
+# Chạy toàn bộ Unit Tests
 python -m pytest
 ```
 
 ---
 
-## 💼 Hồ Sơ CV & Điểm Nổi Bật Để Ứng Tuyển (Portfolio & CV Ready)
+## 🔒 Bảo Mật & Chính Sách Dữ Liệu (Security & Privacy)
 
-### 📌 Gợi ý mô tả trong CV (CV Bullet Points)
-
-#### Tiếng Việt:
-> - **Xây dựng Hệ thống Nhận diện Biển số xe Việt Nam End-to-End**: Phát triển pipeline định vị & nhận dạng biển số tự động dựa trên YOLOv8, OpenCV và EasyOCR; đạt **0.973 mAP@50** và **0.869 mAP@50-95** trên tập kiểm thử độc lập.
-> - **Giải quyết triệt để rò rỉ dữ liệu (Data Leakage)**: Thiết kế thuật toán **Group-Aware Splitting (MD5 Hash + Disjoint Set Union)** gộp các frame video trùng lập trước khi phân chia dữ liệu train/val/test 70/15/15.
-> - **Tối ưu hóa Pipeline & Sản phẩm hóa**: Xây dựng thuật toán nắn góc phối cảnh (Deskew), hậu xử lý khớp mẫu biển số Việt Nam; đóng gói ứng dụng với **FastAPI REST API**, **Web UI Dashboard**, **Docker**, **pytest** và **GitHub Actions CI/CD**.
-
-#### English:
-> - **Built an End-to-End Vietnamese License Plate Recognition Pipeline**: Developed a computer vision system using YOLOv8, OpenCV, and EasyOCR; achieved **0.973 mAP@50** and **0.869 mAP@50-95** on an independent test set.
-> - **Eliminated Video Frame Data Leakage**: Designed a **Group-Aware Splitting algorithm using MD5 Hashing & Disjoint Set Union (DSU)** to merge correlated video frames prior to the 70/15/15 train/val/test split.
-> - **Modular Architecture & Production Packaging**: Implemented 4-point perspective rectification, Vietnamese license plate pattern matching, and packaged the system with **FastAPI**, **Interactive Web Dashboard**, **Docker**, **pytest**, and **GitHub Actions**.
+- **Xử lý trong bộ nhớ (In-memory Processing):** Ảnh tải lên API được giải mã trực tiếp trong RAM và giải phóng sau khi phản hồi, không lưu file tạm lên đĩa cứng.
+- **Bảo vệ nhật ký (Log Redaction):** Hệ thống không ghi chuỗi biển số nhận dạng được vào hệ thống log tiêu chuẩn.
+- **Docker Hardening:** Chạy ứng dụng dưới user `appuser` giảm thiểu rủi ro bảo mật hệ thống host.
 
 ---
 
-### 🎙️ Câu Chuyện Phỏng Vấn (STAR Method Interview Talking Points)
+## 💼 Mô Tả Trình Bày Trong CV (Portfolio CV Bullet Points)
 
-- **Situation (Bối cảnh)**: Khi làm việc với dữ liệu biển số xe từ video, các frame liên tiếp có độ tương đồng rất cao. Nếu chia dữ liệu ngẫu nhiên thông thường (Random Split), các frame gần nhau của cùng 1 video sẽ xuất hiện ở cả tập Train và Test, dẫn đến kết quả mAP ảo rất cao (Data Leakage).
-- **Task (Nhiệm vụ)**: Thiết kế lại quy trình xử lý dữ liệu và pipeline nhận diện đảm bảo đánh giá chính xác hiệu năng thực tế và đạt chuẩn sản xuất (Production-ready).
-- **Action (Hành động)**: 
-  1. Xây dựng thuật toán kiểm toán tên tệp và mã hash MD5 nội dung ảnh, dùng thuật toán **Union-Find (DSU)** gộp các frame cùng nguồn gốc.
-  2. Phân chia tập dữ liệu bằng `GroupShuffleSplit`.
-  3. Mô-đun hóa toàn bộ luồng xử lý (Nắn góc nghiêng, thử nghiệm 4 biến thể binarization, hậu xử lý rule-based khớp biển số 1/2 dòng).
-  4. Viết Unit Test và đóng gói API FastAPI + Web UI Dashboard.
-- **Result (Kết quả)**: Đạt chỉ số thực **0.973 mAP@50** và **0.869 mAP@50-95** trên tập kiểm thử hoàn toàn độc lập, dự án sẵn sàng demo trực quan qua Web UI và triển khai qua Docker.
+> - **Xây dựng Portfolio Prototype Nhận diện Biển số xe Việt Nam End-to-End**: Thiết kế pipeline kết hợp YOLOv8, OpenCV và EasyOCR; phát triển thuật toán nắn góc phối cảnh (Deskew), binarization 4 biến thể ảnh và hậu xử lý rule-based khớp mẫu biển số Việt Nam.
+> - **Ngăn ngừa Rò rỉ Dữ liệu (Data Leakage Control)**: Xây dựng cơ chế **Group-Aware Splitting (MD5 + pHash + Disjoint Set Union)** gộp các frame video trùng lập hoặc gần trùng trước khi chia tập train/val/test 70/15/15.
+> - **Đánh giá Thực nghiệm & Benchmark Ablation**: Xây dựng bộ công cụ đo đạc Recall@IoU, Exact Accuracy, CER và Latency P50/P95; chứng minh hiệu quả từng bước nắn ảnh và hậu xử lý qua báo cáo ablation 5 mốc.
+> - **Sản phẩm hóa & API Production**: Đóng gói ứng dụng với **FastAPI (Liveness/Readiness probes)**, **Web UI Dashboard**, **Docker non-root**, **pytest** và **GitHub Actions CI/CD**.
 
 ---
 

@@ -39,6 +39,41 @@ def infer_source_group(stem: str) -> str:
     return match.group(1).lower() if match else f"standalone::{stem.lower()}"
 
 
+def compute_phash(path: Path) -> str:
+    """Tính mã băm cảm nhận pHash (Perceptual Hash) 64-bit từ ảnh xám để tìm ảnh gần trùng lặp.
+
+    Args:
+        path (Path): Đường dẫn tệp ảnh.
+
+    Returns:
+        str: Chuỗi 16 ký tự hex đại diện pHash.
+    """
+    import cv2
+    import numpy as np
+
+    image = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
+    if image is None:
+        return ""
+    resized = cv2.resize(image, (32, 32), interpolation=cv2.INTER_AREA)
+    dct = cv2.dct(resized.astype(np.float32))
+    dct_low = dct[:8, :8]
+    med = float(np.median(dct_low))
+    bits = (dct_low > med).flatten()
+    hash_int = 0
+    for bit in bits:
+        hash_int = (hash_int << 1) | int(bit)
+    return f"{hash_int:016x}"
+
+
+def phash_hamming_distance(hash1: str, hash2: str) -> int:
+    """Tính khoảng cách Hamming giữa hai chuỗi pHash."""
+    if not hash1 or not hash2 or len(hash1) != len(hash2):
+        return 64
+    val1 = int(hash1, 16)
+    val2 = int(hash2, 16)
+    return bin(val1 ^ val2).count("1")
+
+
 def file_md5(path: Path, chunk_size: int = 1 << 20) -> str:
     """Tính mã băm MD5 của tệp để phát hiện ảnh bị trùng lặp nội dung binary.
 
@@ -93,7 +128,7 @@ def parse_label_file(label_path: Path) -> list[tuple[int, float, float, float, f
 
 
 def collect_manifest(root: Path) -> pd.DataFrame:
-    """Thu thập toàn bộ thông tin ảnh, nhãn, mã băm MD5 và nhóm nguồn từ thư mục dữ liệu YOLO.
+    """Thu thập toàn bộ thông tin ảnh, nhãn, mã băm MD5, pHash và nhóm nguồn từ thư mục dữ liệu YOLO.
 
     Args:
         root (Path): Đường dẫn thư mục dữ liệu gốc chứa train/valid/test.
@@ -147,6 +182,7 @@ def collect_manifest(root: Path) -> pd.DataFrame:
                 "n_objects": len(labels),
                 "class_0_count": counts.get(0, 0),
                 "md5": file_md5(image_path),
+                "phash": compute_phash(image_path),
             })
 
     if not records:
@@ -162,9 +198,9 @@ def collect_manifest(root: Path) -> pd.DataFrame:
 
 
 def _merge_groups_connected_by_hash(frame: pd.DataFrame) -> pd.DataFrame:
-    """Sử dụng thuật toán Disjoint-Set Union (DSU) để gộp các nhóm nguồn có chung ảnh trùng MD5.
+    """Sử dụng thuật toán Disjoint-Set Union (DSU) để gộp các nhóm nguồn có chung ảnh trùng MD5 hoặc pHash gần kề.
 
-    Điều này đảm bảo hai ảnh giống hệt nhau không bao giờ bị rơi vào hai tập split khác nhau (gây rò rỉ).
+    Điều này đảm bảo hai ảnh giống hệt hoặc gần trùng không bao giờ bị rơi vào hai tập split khác nhau.
     """
     parent = {group_id: group_id for group_id in frame["group_id"].unique()}
 
@@ -179,10 +215,19 @@ def _merge_groups_connected_by_hash(frame: pd.DataFrame) -> pd.DataFrame:
         if left_root != right_root:
             parent[max(left_root, right_root)] = min(left_root, right_root)
 
+    # Gộp theo trùng mã MD5
     for groups in frame.groupby("md5")["group_id"].unique():
         first = groups[0]
         for group_id in groups[1:]:
             union(first, group_id)
+
+    # Gộp theo pHash khoảng cách Hamming <= 4
+    phashes = frame[["group_id", "phash"]].drop_duplicates().to_dict(orient="records")
+    for index1 in range(len(phashes)):
+        for index2 in range(index1 + 1, len(phashes)):
+            h1, h2 = phashes[index1]["phash"], phashes[index2]["phash"]
+            if h1 and h2 and phash_hamming_distance(h1, h2) <= 4:
+                union(phashes[index1]["group_id"], phashes[index2]["group_id"])
 
     result = frame.copy()
     result["group_id"] = result["group_id"].map(find)
@@ -190,16 +235,35 @@ def _merge_groups_connected_by_hash(frame: pd.DataFrame) -> pd.DataFrame:
 
 
 def audit_manifest(frame: pd.DataFrame) -> dict:
-    """Thống kê chi tiết số lượng ảnh, đối tượng, nhóm nguồn và số nhóm bị rò rỉ giữa các tập gốc."""
+    """Thống kê chi tiết số lượng ảnh, đối tượng, nhóm nguồn và kiểm tra rò rỉ dữ liệu."""
     crossing_groups = frame.groupby("group_id")["original_split"].nunique()
     crossing_hashes = frame.groupby("md5")["original_split"].nunique()
+
+    # Tính số cặp near-duplicates
+    near_dup_pairs = 0
+    if "phash" in frame.columns:
+        phashes = frame["phash"].tolist()
+        for idx1 in range(len(phashes)):
+            for idx2 in range(idx1 + 1, len(phashes)):
+                if phashes[idx1] and phashes[idx2] and phash_hamming_distance(phashes[idx1], phashes[idx2]) <= 4:
+                    near_dup_pairs += 1
+
+    exact_duplicates = int(frame["md5"].duplicated().sum())
+    split_counts = frame.get("split", frame["original_split"]).value_counts().to_dict()
+
     return {
         "images": len(frame),
         "objects": int(frame["n_objects"].sum()),
         "groups": int(frame["group_id"].nunique()),
+        "exact_duplicates": exact_duplicates,
+        "near_duplicate_pairs": near_dup_pairs,
         "groups_crossing_splits": int((crossing_groups > 1).sum()),
         "duplicate_hashes_crossing_splits": int((crossing_hashes > 1).sum()),
+        "train_images": int(split_counts.get("train", 0)),
+        "validation_images": int(split_counts.get("val", split_counts.get("valid", 0))),
+        "test_images": int(split_counts.get("test", 0)),
     }
+
 
 
 def _score(frame: pd.DataFrame) -> float:

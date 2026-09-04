@@ -4,12 +4,17 @@ import argparse
 import logging
 from pathlib import Path
 
-import cv2
 import easyocr
 import pandas as pd
 import torch
 
-from src.io_utils import require_columns, require_non_empty_text, resolve_relative_path, write_json
+from src.io_utils import (
+    read_image,
+    require_columns,
+    require_non_empty_text,
+    resolve_relative_path,
+    write_json,
+)
 from src.metrics import summarize_ocr
 from src.ocr import read_plate
 
@@ -36,9 +41,7 @@ def main() -> None:
 
     for row in frame.itertuples(index=False):
         crop_path = resolve_relative_path(row.crop_path, base_directory)
-        image = cv2.imread(str(crop_path))
-        if image is None:
-            raise ValueError(f"Không đọc được tệp ảnh crop: {crop_path}")
+        image = read_image(crop_path, "tệp ảnh crop")
         result = read_plate(reader, image, getattr(row, "layout", "auto") or "auto")
         raw_pairs.append((row.plate_text, result["raw_text"]))
         corrected_pairs.append((row.plate_text, result["text"]))
