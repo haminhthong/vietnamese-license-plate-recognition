@@ -157,6 +157,9 @@ class RecognitionConfig:
     enable_template_correction: bool = True
     single_variant_mode: str | None = None
 
+    min_reliability_score: float = 0.70
+    ocr_consensus_threshold: float = 0.50
+
     def __post_init__(self) -> None:
         """Kiểm tra tính hợp lệ của các giá trị tham số cấu hình."""
         if not 0 <= self.detection_confidence <= 1:
@@ -177,6 +180,10 @@ class RecognitionConfig:
             raise ValueError("Tham số 'correction_penalty' không được nhỏ hơn 0.")
         if self.max_correction_cost < 0:
             raise ValueError("Tham số 'max_correction_cost' không được nhỏ hơn 0.")
+        if not 0 <= self.min_reliability_score <= 1:
+            raise ValueError("Tham số 'min_reliability_score' phải nằm trong khoảng [0, 1].")
+        if not 0 <= self.ocr_consensus_threshold <= 1:
+            raise ValueError("Tham số 'ocr_consensus_threshold' phải nằm trong khoảng [0, 1].")
         valid_variants = {None, "crop", "gray", "clahe", "otsu", "adaptive"}
         if self.single_variant_mode not in valid_variants:
             raise ValueError(

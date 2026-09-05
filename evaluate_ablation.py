@@ -1,4 +1,4 @@
-"""Script đánh giá ablation benchmark thử nghiệm vai trò từng thành phần (Preprocessing, Rectification, Post-processing)."""
+"""Script đánh giá ablation benchmark thử nghiệm vai trò từng thành phần (Preprocessing, Rectification, Post-processing, Padding Ratios)."""
 
 import argparse
 import logging
@@ -48,6 +48,8 @@ ABLATION_CONFIGS = {
     ),
 }
 
+PADDING_BENCHMARKS = [0.00, 0.03, 0.05, 0.08, 0.10]
+
 
 def run_ablation_evaluation(
     weights: Path,
@@ -55,7 +57,7 @@ def run_ablation_evaluation(
     iou_threshold: float = 0.5,
     cpu: bool = False,
 ) -> tuple[dict[str, dict], pd.DataFrame]:
-    """Chạy đánh giá ablation trên tất cả 5 mốc cấu hình pipeline."""
+    """Chạy đánh giá ablation trên 5 mốc cấu hình pipeline chính và khảo sát tỷ lệ crop padding."""
     frame = pd.read_csv(annotations)
     require_columns(frame, {"image_path", "x1", "y1", "x2", "y2", "plate_text"}, "Annotation ablation")
     require_non_empty_text(frame, "plate_text", "Annotation ablation")
@@ -73,7 +75,7 @@ def run_ablation_evaluation(
     for name, config in ABLATION_CONFIGS.items():
         logger.info("Chạy ablation cấu hình: %s...", name)
         recognizer = LicensePlateRecognizer(weights, gpu=False if cpu else None, config=config)
-        records, latencies = [], []
+        records, latencies, rectified_flags = [], [], []
 
         for image_name, ground_truths in frame.groupby("image_path", sort=False):
             image = images[image_name]
@@ -82,9 +84,10 @@ def run_ablation_evaluation(
 
             for match in match_ground_truth_boxes(predictions, ground_truths, iou_threshold=iou_threshold):
                 truth, prediction, matched = match["truth"], match["prediction"], match["matched"]
+                rectified_flags.append(bool(prediction.get("rectified", False)))
                 records.append({
                     "ground_truth": str(truth.plate_text),
-                    "prediction": prediction["text"] if config.enable_template_correction else prediction["raw_text"],
+                    "prediction": prediction.get("text", "") if config.enable_template_correction else prediction.get("raw_text", ""),
                     "detected": matched,
                 })
 
@@ -94,10 +97,12 @@ def run_ablation_evaluation(
         ocr_stats = summarize_ocr(zip(pred_df["ground_truth"], pred_df["prediction"], strict=True))
         latency_stats = summarize_latencies(latencies)
         recall = float(pred_df["detected"].mean())
+        rect_rate = float(pd.Series(rectified_flags).mean()) if rectified_flags else 0.0
 
         config_result = {
             "name": name,
             "detection_recall": recall,
+            "rectification_applied_rate": rect_rate,
             **ocr_stats,
             **latency_stats,
         }
@@ -109,8 +114,37 @@ def run_ablation_evaluation(
             "Latency Mean (ms)": f"{latency_stats['mean_latency_ms']:.1f}",
             "Latency P95 (ms)": f"{latency_stats['p95_latency_ms']:.1f}",
             "Detection Recall": f"{recall * 100:.2f}%",
+            "Rectification Rate": f"{rect_rate * 100:.1f}%",
         })
 
+    # Ablation đệm crop (Padding Ratios)
+    logger.info("Chạy khảo sát tỷ lệ Crop Padding Ratios...")
+    padding_results = {}
+    for pad in PADDING_BENCHMARKS:
+        pad_config = RecognitionConfig(
+            padding_ratio=pad,
+            enable_preprocessing_variants=True,
+            enable_rectification=True,
+            enable_template_correction=True,
+        )
+        recognizer = LicensePlateRecognizer(weights, gpu=False if cpu else None, config=pad_config)
+        records = []
+        for image_name, ground_truths in frame.groupby("image_path", sort=False):
+            image = images[image_name]
+            predictions = recognizer.predict(image)
+            for match in match_ground_truth_boxes(predictions, ground_truths, iou_threshold=iou_threshold):
+                truth, prediction, matched = match["truth"], match["prediction"], match["matched"]
+                records.append({
+                    "ground_truth": str(truth.plate_text),
+                    "prediction": prediction.get("text", ""),
+                    "detected": matched,
+                })
+        del recognizer
+        pred_df = pd.DataFrame(records)
+        ocr_stats = summarize_ocr(zip(pred_df["ground_truth"], pred_df["prediction"], strict=True))
+        padding_results[f"padding_{int(pad*100)}%"] = ocr_stats
+
+    results["padding_ratio_ablation"] = padding_results
     return results, pd.DataFrame(rows)
 
 

@@ -1,0 +1,15 @@
+# Mẫu định dạng biển số xe Việt Nam tiêu chuẩn
+# D = Digit (Chữ số 0-9), L = Letter (Chữ cái Latin A-Z)
+
+templates:
+  7:
+    - DDLDDDD                  # Ví dụ: 51F1234 (7 ký tự)
+  8:
+    - DDLDDDDD                 # Ví dụ: 51F12345 (8 ký tự - ô tô/xe máy tiêu chuẩn)
+  9:
+    - DDLDDDDDD                # Ví dụ: 51F123456 (9 ký tự)
+    - DDLLDDDDD                # Ví dụ: 51AB12345 (9 ký tự - biển xe máy 2 chữ cái series)
+  10:
+    - DDLLDDDDDD               # Ví dụ: 51AB123456 (10 ký tự)
+
+scope_description: "Chỉ hỗ trợ biển số dân sự tiêu chuẩn. Không hỗ trợ biển số ngoại giao (NG/QT) hoặc quân đội."

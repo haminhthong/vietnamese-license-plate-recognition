@@ -112,13 +112,11 @@ def test_error_analysis_classification():
     from src.error_analysis import classify_error
 
     assert classify_error("51F12345", "51F12345", "51F12345", detected=True, iou=0.8) == "correct"
-    assert classify_error("51F12345", "", "", detected=False, iou=0.0) == "false_negative"
-    assert classify_error("51F12345", "", "", detected=False, iou=0.3) == "wrong_box"
-    assert classify_error("51F12345", "51F12345", "51F12345", detected=True, iou=0.3) == "wrong_box"
-    assert classify_error("51F12345", "51F1234", "51F1234", detected=True, iou=0.8) == "missing_chars"
-    assert classify_error("51F12345", "51F123456", "51F123456", detected=True, iou=0.8) == "extra_chars"
-    assert classify_error("51F12345", "51F12346", "51F12346", detected=True, iou=0.8) == "char_confusion"
-    assert classify_error("51F12345", "51F12345", "51F12346", detected=True, iou=0.8) == "correction_error"
+    assert classify_error("51F12345", "", "", detected=False, iou=0.0) == "detector_miss"
+    assert classify_error("51F12345", "", "", detected=True, iou=0.3) == "iou_poor"
+    assert classify_error("51F12345", "51F12345", "51F12345", detected=True, iou=0.3) == "iou_poor"
+    assert classify_error("51F12345", "51F1234", "51F1234", detected=True, iou=0.8) == "ocr_wrong"
+    assert classify_error("51F12345", "51F12345", "51F12346", detected=True, iou=0.8) == "template_over_correction"
 
 
 def test_phash_helpers_and_dataset_audit():
@@ -145,3 +143,80 @@ def test_recognition_config_from_yaml_and_validation(tmp_path):
         RecognitionConfig(correction_penalty=-0.1)
     with pytest.raises(ValueError):
         RecognitionConfig(single_variant_mode="khong_hop_le")
+
+
+def test_reliability_policy_and_review_reasons():
+    """Kiểm tra tính toán Reliability Score và phát hiện lý do cần kiểm duyệt thủ công."""
+    from src.ocr import evaluate_plate_reliability
+
+    cfg = RecognitionConfig(detection_confidence=0.25, ocr_minimum_confidence=0.20, min_reliability_score=0.70)
+    score, reasons, needs_review = evaluate_plate_reliability(0.95, 0.85, 0.75, True, 0.0, cfg)
+    assert score > 0.70
+    assert not needs_review
+    assert reasons == []
+
+    # Thử trường hợp format sai và consensus thấp
+    score_low, reasons_low, needs_review_low = evaluate_plate_reliability(0.20, 0.15, 0.25, False, 2.0, cfg)
+    assert needs_review_low is True
+    assert "INVALID_FORMAT" in reasons_low
+    assert "LOW_DETECTION_SCORE" in reasons_low
+    assert "HIGH_CORRECTION_COST" in reasons_low
+
+
+def test_advanced_metrics_and_confusion_matrix():
+    """Kiểm tra ma trận nhầm lẫn, đo đạc positional accuracy, postprocessing gain/harm và bootstrap CI."""
+    from src.metrics import (
+        bootstrap_confidence_intervals,
+        compute_confusion_matrix,
+        compute_positional_accuracy,
+        compute_postprocessing_gain_harm,
+    )
+
+    pairs = [("51F12345", "51F12345"), ("51F12345", "51F12845")]
+    conf_mat = compute_confusion_matrix(pairs)
+    assert conf_mat.get("3->8") == 1
+
+    pos_acc = compute_positional_accuracy(pairs)
+    assert "province_digits_accuracy" in pos_acc
+    assert pos_acc["province_digits_accuracy"] == 1.0
+
+    records = [
+        {"ground_truth": "51F12345", "raw_prediction": "51FI2345", "corrected_prediction": "51F12345"},
+        {"ground_truth": "51F12345", "raw_prediction": "51F12345", "corrected_prediction": "51F12345"},
+    ]
+    gain_harm = compute_postprocessing_gain_harm(records)
+    assert gain_harm["correction_gain_count"] == 1
+    assert gain_harm["correction_harm_count"] == 0
+
+    cis = bootstrap_confidence_intervals(pairs, num_bootstraps=50)
+    assert "exact_accuracy_ci95" in cis
+    assert len(cis["exact_accuracy_ci95"]) == 2
+
+
+def test_resource_loaders():
+    """Kiểm tra nạp quy tắc biển số và từ điển thay thế từ tệp resources YAML."""
+    from src.ocr import load_ocr_substitutions, load_plate_templates
+
+    templates = load_plate_templates()
+    assert 8 in templates
+    assert "DDLDDDDD" in templates[8]
+
+    d_subs, l_subs = load_ocr_substitutions()
+    assert d_subs["O"] == "0"
+    assert l_subs["0"] == "O"
+
+
+def test_plate_identity_grouping_in_dsu():
+    """Kiểm tra tính năng gộp theo plate_identity trong _merge_groups_connected_by_hash (Protocol B)."""
+    from src.dataset import _merge_groups_connected_by_hash
+
+    df = pd.DataFrame({
+        "group_id": ["cam1_01", "cam2_05"],
+        "original_split": ["train", "val"],
+        "md5": ["hash1", "hash2"],
+        "phash": ["0000000000000000", "ffffffffffffffff"],
+        "plate_identity": ["51F12345", "51F12345"],
+    })
+    merged = _merge_groups_connected_by_hash(df)
+    assert merged["group_id"].nunique() == 1
+

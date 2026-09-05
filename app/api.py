@@ -102,12 +102,45 @@ async def predict(image: Annotated[UploadFile, File()]) -> PredictionResponse:
 
     try:
         async with INFERENCE_SEMAPHORE:
-            predictions = await asyncio.to_thread(recognizer.predict, decoded)
+            raw_preds = await asyncio.to_thread(recognizer.predict, decoded)
     except Exception as error:
         raise HTTPException(status_code=500, detail="Xảy ra lỗi trong quá trình thực thi suy luận mô hình.") from error
+
+    formatted_preds = []
+    for item in raw_preds:
+        recognition = {
+            "raw_text": item.get("raw_text", ""),
+            "text": item.get("text", ""),
+            "format_valid": item.get("format_valid", False),
+            "template": item.get("template"),
+            "correction_cost": item.get("correction_cost", 0.0),
+            "correction_applied": item.get("correction_applied", False),
+        }
+        scores = {
+            "detector_confidence": item.get("detection_confidence", 0.0),
+            "ocr_confidence": item.get("ocr_confidence", 0.0),
+            "ocr_consensus_ratio": item.get("ocr_consensus_ratio", 1.0),
+            "reliability_score": item.get("reliability_score", 1.0),
+        }
+        review = {
+            "required": item.get("needs_manual_review", False),
+            "reasons": item.get("review_reasons", []),
+        }
+        latencies = {
+            "image_pipeline_latency_ms": item.get("image_pipeline_latency_ms", item.get("pipeline_latency_ms", 0.0)),
+            "plate_ocr_latency_ms": item.get("plate_ocr_latency_ms", 0.0),
+            "detector_latency_ms": item.get("detector_latency_ms", 0.0),
+        }
+        formatted_preds.append({
+            **item,
+            "recognition": recognition,
+            "scores": scores,
+            "review": review,
+            "latencies": latencies,
+        })
 
     return PredictionResponse(
         filename=image.filename,
         latency_ms=recognizer.last_latency_ms,
-        predictions=predictions,
+        predictions=formatted_preds,
     )

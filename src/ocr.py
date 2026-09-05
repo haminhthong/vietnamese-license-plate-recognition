@@ -10,9 +10,11 @@ Module này chịu trách nhiệm:
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import numpy as np
+import yaml
 
 from .config import RecognitionConfig
 from .rectification import rectify_plate
@@ -23,20 +25,51 @@ ASCII_LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 OCR_ALLOWLIST = f"{ASCII_DIGITS}{ASCII_LETTERS}-."
 VALID_LAYOUTS = {"1_line", "2_line"}
 
-# Từ điển thay thế ký tự nhầm lẫn giữa chữ cái và chữ số
-DIGIT_SUBSTITUTIONS = {
+# Từ điển thay thế mặc định (fallback)
+DEFAULT_DIGIT_SUBSTITUTIONS = {
     "O": "0", "Q": "0", "D": "0", "I": "1", "L": "1", "Z": "2",
     "J": "3", "A": "4", "S": "5", "G": "6", "B": "8",
 }
-LETTER_SUBSTITUTIONS = {"0": "O", "1": "I", "2": "Z", "4": "A", "5": "S", "8": "B"}
+DEFAULT_LETTER_SUBSTITUTIONS = {"0": "O", "1": "I", "2": "Z", "4": "A", "5": "S", "8": "B"}
 
-# Các mẫu biển số Việt Nam tiêu chuẩn (D = Digit/Chữ số, L = Letter/Chữ cái Latin)
-PLATE_TEMPLATES = {
+DEFAULT_PLATE_TEMPLATES = {
     7: ["DDLDDDD"],                  # Ví dụ: 51F1234 (7 ký tự)
     8: ["DDLDDDDD"],                 # Ví dụ: 51F12345 (8 ký tự)
     9: ["DDLDDDDDD", "DDLLDDDDD"],   # Ví dụ: 51F123456 hoặc 51AB12345 (9 ký tự)
     10: ["DDLLDDDDDD"],              # Ví dụ: 51AB123456 (10 ký tự)
 }
+
+
+def load_plate_templates() -> dict[int, list[str]]:
+    """Nạp mẫu quy tắc biển số xe từ resources/plate_templates.yaml hoặc dùng mặc định."""
+    resource_path = Path(__file__).resolve().parent.parent / "resources" / "plate_templates.yaml"
+    if resource_path.is_file():
+        try:
+            payload = yaml.safe_load(resource_path.read_text(encoding="utf-8"))
+            if isinstance(payload, dict) and "templates" in payload:
+                return {int(key): list(value) for key, value in payload["templates"].items()}
+        except Exception:
+            pass
+    return DEFAULT_PLATE_TEMPLATES
+
+
+def load_ocr_substitutions() -> tuple[dict[str, str], dict[str, str]]:
+    """Nạp từ điển thay thế ký tự từ resources/ocr_confusions.yaml hoặc dùng mặc định."""
+    resource_path = Path(__file__).resolve().parent.parent / "resources" / "ocr_confusions.yaml"
+    if resource_path.is_file():
+        try:
+            payload = yaml.safe_load(resource_path.read_text(encoding="utf-8"))
+            if isinstance(payload, dict):
+                digit_subs = payload.get("digit_substitutions", DEFAULT_DIGIT_SUBSTITUTIONS)
+                letter_subs = payload.get("letter_substitutions", DEFAULT_LETTER_SUBSTITUTIONS)
+                return dict(digit_subs), dict(letter_subs)
+        except Exception:
+            pass
+    return DEFAULT_DIGIT_SUBSTITUTIONS, DEFAULT_LETTER_SUBSTITUTIONS
+
+
+PLATE_TEMPLATES = load_plate_templates()
+DIGIT_SUBSTITUTIONS, LETTER_SUBSTITUTIONS = load_ocr_substitutions()
 
 
 def normalize_plate_text(text: str) -> str:
@@ -150,16 +183,11 @@ def _token_geometry(bbox: list[list[float]]) -> dict[str, float]:
     }
 
 
-def order_ocr_tokens(ocr_results: list, layout: str, minimum_confidence: float = 0.20) -> tuple[str, float]:
+def order_ocr_tokens(ocr_results: list, layout: str, minimum_confidence: float = 0.20) -> tuple[str, float, list[dict[str, Any]]]:
     """Lọc các token nhiễu và sắp xếp theo đúng thứ tự đọc dựa trên bố cục 1 dòng hoặc 2 dòng.
 
-    Args:
-        ocr_results (list): Kết quả trả về từ EasyOCR.
-        layout (str): Bố cục biển số ('1_line' hoặc '2_line').
-        minimum_confidence (float): Độ tin cậy tối thiểu để giữ lại token.
-
     Returns:
-        tuple[str, float]: Cặp (chuỗi_ký_tự_hoàn_chỉnh, độ_tin_cậy_trung_bình).
+        tuple[str, float, list[dict]]: (chuỗi_ký_tự, độ_tin_cậy, danh_sách_tokens).
     """
     if layout not in VALID_LAYOUTS:
         raise ValueError(f"Bố cục không hợp lệ: {layout}")
@@ -175,12 +203,12 @@ def order_ocr_tokens(ocr_results: list, layout: str, minimum_confidence: float =
                 **_token_geometry(bbox),
             })
     if not tokens:
-        return "", 0.0
+        return "", 0.0, []
 
     median_height = float(np.median([token["height"] for token in tokens]))
     tokens = [token for token in tokens if token["height"] >= 0.45 * median_height]
     if not tokens:
-        return "", 0.0
+        return "", 0.0, []
 
     if layout == "2_line" and len(tokens) >= 2:
         ordered = _order_two_line_tokens(tokens, median_height)
@@ -192,7 +220,7 @@ def order_ocr_tokens(ocr_results: list, layout: str, minimum_confidence: float =
         [token["confidence"] for token in ordered],
         weights=[max(1, len(token["text"])) for token in ordered],
     ))
-    return text, confidence
+    return text, confidence, ordered
 
 
 def _order_two_line_tokens(tokens: list[dict[str, Any]], median_height: float) -> list[dict[str, Any]]:
@@ -222,14 +250,7 @@ def _order_two_line_tokens(tokens: list[dict[str, Any]], median_height: float) -
 
 
 def preprocess_plate_variants(crop_bgr: np.ndarray) -> dict[str, np.ndarray]:
-    """Tạo ra 4 biến thể ảnh tiền xử lý (Gray, CLAHE, Otsu, Adaptive Threshold) để tăng khả năng đọc OCR.
-
-    Args:
-        crop_bgr (np.ndarray): Ảnh crop vùng biển số gốc.
-
-    Returns:
-        dict[str, np.ndarray]: Từ điển chứa các ảnh biến thể.
-    """
+    """Tạo ra 4 biến thể ảnh tiền xử lý (Gray, CLAHE, Otsu, Adaptive Threshold) để tăng khả năng đọc OCR."""
     import cv2
 
     if crop_bgr is None or crop_bgr.size == 0:
@@ -246,22 +267,64 @@ def preprocess_plate_variants(crop_bgr: np.ndarray) -> dict[str, np.ndarray]:
     return {"gray": gray, "clahe": clahe, "otsu": otsu, "adaptive": adaptive}
 
 
-def infer_plate_layout(crop_bgr: np.ndarray, wide_ratio_threshold: float = 2.20) -> str:
-    """Ước lượng tự động biển số là 1 dòng hay 2 dòng dựa trên tỷ lệ chiều rộng / chiều cao.
-
-    Args:
-        crop_bgr (np.ndarray): Ảnh crop biển số.
-        wide_ratio_threshold (float): Ngưỡng tỷ lệ khung hình (mặc định: 2.20).
-
-    Returns:
-        str: '1_line' nếu là biển dài hoặc '2_line' nếu là biển vuông/gần vuông.
-    """
+def infer_plate_layout(
+    crop_bgr: np.ndarray,
+    wide_ratio_threshold: float = 2.20,
+    tokens: list[dict[str, Any]] | None = None,
+) -> str:
+    """Ước lượng tự động bố cục biển số dựa trên aspect ratio và phân bố tọa độ Y của tokens (nếu có)."""
     if wide_ratio_threshold <= 0:
         raise ValueError("wide_ratio_threshold phải lớn hơn 0")
     if crop_bgr is None or crop_bgr.size == 0:
         return "1_line"
     height, width = crop_bgr.shape[:2]
-    return "1_line" if width / max(1, height) >= wide_ratio_threshold else "2_line"
+    initial_layout = "1_line" if width / max(1, height) >= wide_ratio_threshold else "2_line"
+
+    # Tinh chỉnh dựa trên cụm tọa độ Y-center của token nếu có
+    if tokens and len(tokens) >= 2:
+        sorted_by_y = sorted(tokens, key=lambda t: t["center_y"])
+        y_gaps = [sorted_by_y[i + 1]["center_y"] - sorted_by_y[i]["center_y"] for i in range(len(sorted_by_y) - 1)]
+        median_h = float(np.median([t["height"] for t in tokens]))
+        if max(y_gaps, default=0.0) >= 0.25 * median_h:
+            return "2_line"
+
+    return initial_layout
+
+
+def evaluate_plate_reliability(
+    detection_confidence: float,
+    ocr_confidence: float,
+    ocr_consensus_ratio: float,
+    format_valid: bool,
+    correction_cost: float,
+    config: RecognitionConfig,
+) -> tuple[float, list[str], bool]:
+    """Tính toán Reliability Score (0.0 -> 1.0) và xác định danh sách các lý do cần kiểm duyệt thủ công."""
+    score = (
+        0.40 * detection_confidence
+        + 0.35 * ocr_confidence
+        + 0.15 * ocr_consensus_ratio
+        + (0.10 if format_valid else 0.0)
+        - 0.05 * correction_cost
+    )
+    reliability_score = float(np.clip(score, 0.0, 1.0))
+
+    review_reasons: list[str] = []
+    if detection_confidence < config.detection_confidence:
+        review_reasons.append("LOW_DETECTION_SCORE")
+    if ocr_confidence < config.ocr_minimum_confidence + 0.10:
+        review_reasons.append("LOW_OCR_SCORE")
+    if not format_valid:
+        review_reasons.append("INVALID_FORMAT")
+    if correction_cost > config.max_correction_cost:
+        review_reasons.append("HIGH_CORRECTION_COST")
+    if ocr_consensus_ratio < config.ocr_consensus_threshold:
+        review_reasons.append("VARIANT_DISAGREEMENT")
+    if reliability_score < config.min_reliability_score:
+        review_reasons.append("LOW_RELIABILITY_SCORE")
+
+    needs_manual_review = bool(review_reasons)
+    return reliability_score, review_reasons, needs_manual_review
 
 
 def read_plate(
@@ -269,18 +332,9 @@ def read_plate(
     crop_bgr: np.ndarray,
     layout: str = "auto",
     config: RecognitionConfig | None = None,
+    detection_confidence: float = 1.0,
 ) -> dict[str, Any]:
-    """Thực hiện quy trình đọc biển số hoàn chỉnh: Nắn góc, tiền xử lý đa biến thể, OCR và sửa lỗi theo mẫu.
-
-    Args:
-        reader (Any): Đối tượng EasyOCR Reader.
-        crop_bgr (np.ndarray): Ảnh crop biển số BGR.
-        layout (str): Bố cục ('auto', '1_line', '2_line').
-        config (RecognitionConfig | None): Cấu hình nhận diện.
-
-    Returns:
-        dict[str, Any]: Thông tin chi tiết kết quả đọc biển số tốt nhất.
-    """
+    """Thực hiện quy trình đọc biển số hoàn chỉnh: Nắn góc, tiền xử lý đa biến thể, OCR, consensus và Reliability Policy."""
     if layout != "auto" and layout not in VALID_LAYOUTS:
         raise ValueError(f"Bố cục không hợp lệ: {layout}")
     cfg = config or RecognitionConfig()
@@ -312,7 +366,7 @@ def read_plate(
             processed, detail=1, paragraph=False,
             allowlist=OCR_ALLOWLIST,
         )
-        raw_text, confidence = order_ocr_tokens(
+        raw_text, confidence, tokens = order_ocr_tokens(
             results, resolved_layout, minimum_confidence=cfg.ocr_minimum_confidence
         )
         validated = validate_and_correct_plate(
@@ -332,12 +386,49 @@ def read_plate(
             "rectified": rectified,
             "variant": variant_name,
             "score": score,
+            "tokens": tokens,
         })
-    if candidates:
-        return max(candidates, key=lambda item: item["score"])
+
+    if not candidates:
+        reliability_score, review_reasons, needs_review = evaluate_plate_reliability(
+            detection_confidence, 0.0, 0.0, False, 0.0, cfg
+        )
+        return {
+            "raw_text": "", "text": "", "format_valid": False, "template": None,
+            "correction_cost": 0.0, "correction_applied": False,
+            "ocr_confidence": 0.0, "ocr_consensus_ratio": 0.0, "reliability_score": reliability_score,
+            "layout": resolved_layout, "variant": None, "score": 0.0, "rectified": rectified,
+            "needs_manual_review": needs_review, "review_reasons": review_reasons,
+        }
+
+    best = max(candidates, key=lambda item: item["score"])
+    top_text = best["text"]
+    matching_count = sum(1 for c in candidates if c["text"] == top_text)
+    ocr_consensus_ratio = float(matching_count / len(candidates))
+
+    reliability_score, review_reasons, needs_review = evaluate_plate_reliability(
+        detection_confidence,
+        best["ocr_confidence"],
+        ocr_consensus_ratio,
+        best["format_valid"],
+        best["correction_cost"],
+        cfg,
+    )
+
     return {
-        "raw_text": "", "text": "", "format_valid": False, "template": None,
-        "correction_cost": 0.0, "correction_applied": False, "needs_manual_review": True,
-        "ocr_confidence": 0.0, "layout": resolved_layout,
-        "variant": None, "score": 0.0, "rectified": rectified,
+        "raw_text": best["raw_text"],
+        "text": best["text"],
+        "format_valid": best["format_valid"],
+        "template": best["template"],
+        "correction_cost": best["correction_cost"],
+        "correction_applied": best["correction_applied"],
+        "ocr_confidence": best["ocr_confidence"],
+        "ocr_consensus_ratio": ocr_consensus_ratio,
+        "reliability_score": reliability_score,
+        "layout": best["layout"],
+        "variant": best["variant"],
+        "score": best["score"],
+        "rectified": best["rectified"],
+        "needs_manual_review": needs_review,
+        "review_reasons": review_reasons,
     }

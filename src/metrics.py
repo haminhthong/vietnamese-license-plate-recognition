@@ -143,3 +143,122 @@ def match_ground_truth_boxes(
             "iou": best_iou,
         })
     return matched_results
+
+
+def compute_confusion_matrix(pairs: Iterable[tuple[str, str]]) -> dict[str, int]:
+    """Thống kê ma trận nhầm lẫn ký tự giữa nhãn Ground Truth và chuỗi dự đoán (ví dụ: '0->O': 5)."""
+    counts: dict[str, int] = {}
+    for truth, pred in pairs:
+        gt_norm, pred_norm = normalize_plate_text(truth), normalize_plate_text(pred)
+        if len(gt_norm) == len(pred_norm):
+            for g_char, p_char in zip(gt_norm, pred_norm, strict=True):
+                if g_char != p_char:
+                    key = f"{g_char}->{p_char}"
+                    counts[key] = counts.get(key, 0) + 1
+    return dict(sorted(counts.items(), key=lambda item: item[1], reverse=True))
+
+
+def compute_postprocessing_gain_harm(records: list[dict[str, Any]]) -> dict[str, Any]:
+    """Tính các chỉ số đánh giá hiệu quả hậu xử lý Template: Correction Gain, Harm Rate, Precision, Recall."""
+    gain_count = 0
+    harm_count = 0
+    raw_correct = 0
+    corrected_correct = 0
+    total_corrections = 0
+
+    for r in records:
+        gt = normalize_plate_text(r.get("ground_truth", ""))
+        raw = normalize_plate_text(r.get("raw_prediction", ""))
+        corr = normalize_plate_text(r.get("corrected_prediction", r.get("prediction", "")))
+
+        is_raw_match = raw == gt
+        is_corr_match = corr == gt
+        applied = raw != corr
+
+        if is_raw_match:
+            raw_correct += 1
+        if is_corr_match:
+            corrected_correct += 1
+        if applied:
+            total_corrections += 1
+            if not is_raw_match and is_corr_match:
+                gain_count += 1
+            elif is_raw_match and not is_corr_match:
+                harm_count += 1
+
+    total_samples = max(1, len(records))
+    raw_errors = total_samples - raw_correct
+
+    return {
+        "correction_gain_count": gain_count,
+        "correction_harm_count": harm_count,
+        "correction_gain_rate": gain_count / total_samples,
+        "correction_harm_rate": harm_count / total_samples,
+        "correction_precision": gain_count / max(1, total_corrections),
+        "correction_recall": gain_count / max(1, raw_errors),
+        "raw_exact_accuracy": raw_correct / total_samples,
+        "corrected_exact_accuracy": corrected_correct / total_samples,
+    }
+
+
+def compute_positional_accuracy(pairs: Iterable[tuple[str, str]]) -> dict[str, float]:
+    """Đo độ chính xác OCR chia theo vị trí: 2 chữ số tỉnh/thành, chữ cái series, các chữ số thứ tự."""
+    province_correct, province_total = 0, 0
+    letter_correct, letter_total = 0, 0
+    serial_correct, serial_total = 0, 0
+
+    for truth, pred in pairs:
+        gt = normalize_plate_text(truth)
+        pr = normalize_plate_text(pred)
+        if len(gt) >= 7 and len(pr) >= 7 and len(gt) == len(pr):
+            # 2 chữ số tỉnh thành gốc
+            province_total += 2
+            province_correct += sum(gt[i] == pr[i] for i in range(2))
+
+            # Chữ cái series (vị trí 2)
+            letter_total += 1
+            letter_correct += (gt[2] == pr[2])
+
+            # Các chữ số thứ tự đuôi (từ vị trí 3 trở đi)
+            serial_total += (len(gt) - 3)
+            serial_correct += sum(gt[i] == pr[i] for i in range(3, len(gt)))
+
+    return {
+        "province_digits_accuracy": province_correct / max(1, province_total),
+        "series_letter_accuracy": letter_correct / max(1, letter_total),
+        "serial_digits_accuracy": serial_correct / max(1, serial_total),
+    }
+
+
+def bootstrap_confidence_intervals(
+    pairs: list[tuple[str, str]],
+    num_bootstraps: int = 500,
+    ci: float = 0.95,
+) -> dict[str, list[float]]:
+    """Tính khoảng tin cậy 95% Bootstrap cho Exact Plate Accuracy và CER."""
+    import numpy as np
+
+    if not pairs:
+        return {"exact_accuracy_ci95": [0.0, 0.0], "cer_ci95": [0.0, 0.0]}
+
+    rng = np.random.default_rng(42)
+    sample_size = len(pairs)
+    acc_bootstraps = []
+    cer_bootstraps = []
+
+    pairs_arr = np.array(pairs, dtype=object)
+    for _ in range(num_bootstraps):
+        indices = rng.choice(sample_size, size=sample_size, replace=True)
+        boot_pairs = pairs_arr[indices]
+        summary = summarize_ocr([(p[0], p[1]) for p in boot_pairs])
+        acc_bootstraps.append(summary["exact_plate_accuracy"])
+        cer_bootstraps.append(summary["cer"])
+
+    alpha = (1.0 - ci) / 2.0
+    acc_ci = [float(np.percentile(acc_bootstraps, alpha * 100)), float(np.percentile(acc_bootstraps, (1 - alpha) * 100))]
+    cer_ci = [float(np.percentile(cer_bootstraps, alpha * 100)), float(np.percentile(cer_bootstraps, (1 - alpha) * 100))]
+
+    return {
+        "exact_accuracy_ci95": acc_ci,
+        "cer_ci95": cer_ci,
+    }

@@ -7,7 +7,6 @@ from typing import Any
 
 import pandas as pd
 
-from .metrics import levenshtein_distance
 from .ocr import normalize_plate_text
 
 
@@ -19,37 +18,26 @@ def classify_error(
     iou: float,
     iou_threshold: float = 0.5,
 ) -> str:
-    """Phân loại nhóm nguyên nhân lỗi cho từng mẫu nhận diện.
-
-    Các nhóm lỗi:
+    """Phân loại nhóm nguyên nhân lỗi cho từng mẫu nhận diện theo Error Taxonomy tiêu chuẩn:
     - correct: Dự đoán đúng 100%
-    - false_negative: Detector bỏ sót biển số
-    - wrong_box: Bounding box có IoU thấp (< iou_threshold)
-    - missing_chars: OCR thiếu ký tự so với ground truth
-    - extra_chars: OCR thừa ký tự so với ground truth
-    - char_confusion: OCR nhầm lẫn giữa các ký tự có cùng độ dài
-    - correction_error: Hậu xử lý template làm kết quả tệ hơn (raw_pred khớp nhưng corrected_pred sai)
-    - ocr_error: Các lỗi OCR tổng hợp khác
+    - detector_miss: Detector bỏ sót hoàn toàn biển số
+    - iou_poor: Bounding box có IoU thấp (< iou_threshold)
+    - template_over_correction: Hậu xử lý template làm sai kết quả raw OCR vốn đúng
+    - ocr_wrong: Lỗi nhận dạng OCR ký tự
     """
     gt_norm = normalize_plate_text(ground_truth)
     raw_norm = normalize_plate_text(raw_pred)
     corr_norm = normalize_plate_text(corrected_pred)
 
-    if iou < iou_threshold:
-        return "wrong_box" if iou > 0 else "false_negative"
     if not detected:
-        return "false_negative"
+        return "detector_miss"
+    if iou < iou_threshold:
+        return "iou_poor"
     if corr_norm == gt_norm:
         return "correct"
     if raw_norm == gt_norm and corr_norm != gt_norm:
-        return "correction_error"
-    if len(corr_norm) < len(gt_norm):
-        return "missing_chars"
-    if len(corr_norm) > len(gt_norm):
-        return "extra_chars"
-    if len(corr_norm) == len(gt_norm) and levenshtein_distance(gt_norm, corr_norm) > 0:
-        return "char_confusion"
-    return "ocr_error"
+        return "template_over_correction"
+    return "ocr_wrong"
 
 
 def generate_error_analysis_report(

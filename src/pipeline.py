@@ -95,6 +95,7 @@ class LicensePlateRecognizer:
             raise ValueError("Tham số 'confidence' phải nằm trong khoảng [0, 1].")
 
         started_at = perf_counter()
+        det_start = perf_counter()
         result = self.detector.predict(
             source=image_bgr,
             conf=detection_confidence,
@@ -102,6 +103,8 @@ class LicensePlateRecognizer:
             imgsz=self.config.image_size,
             verbose=False,
         )[0]
+        detector_latency_ms = (perf_counter() - det_start) * 1_000
+
         predictions: list[dict[str, Any]] = []
         boxes = [] if result.boxes is None else result.boxes
         for box in boxes:
@@ -111,19 +114,42 @@ class LicensePlateRecognizer:
             if crop.size == 0:
                 continue
             class_id = int(box.cls.item())
+            det_conf = float(box.conf.item())
+
+            plate_start = perf_counter()
+            ocr_res = read_plate(self.reader, crop, config=self.config, detection_confidence=det_conf)
+            plate_ocr_latency_ms = (perf_counter() - plate_start) * 1_000
+
             predictions.append({
                 "box": detected_box,
                 "padded_box": padded_box,
                 "class_id": class_id,
                 "detector_class": result.names.get(class_id, "unknown"),
-                "detection_confidence": float(box.conf.item()),
-                **read_plate(self.reader, crop, config=self.config),
+                "detection_confidence": det_conf,
+                "detector_latency_ms": detector_latency_ms,
+                "plate_ocr_latency_ms": plate_ocr_latency_ms,
+                **ocr_res,
             })
+
+        # Post-NMS deduplication: loại bỏ các bboxes trùng lặp có IoU cao và cùng kết quả text
+        if len(predictions) > 1:
+            from .metrics import box_iou
+            filtered: list[dict[str, Any]] = []
+            for p in sorted(predictions, key=lambda x: x["score"], reverse=True):
+                duplicate = False
+                for existing in filtered:
+                    if box_iou(p["box"], existing["box"]) > 0.70 and p["text"] == existing["text"] and p["text"] != "":
+                        duplicate = True
+                        break
+                if not duplicate:
+                    filtered.append(p)
+            predictions = filtered
 
         elapsed_ms = (perf_counter() - started_at) * 1_000
         self.last_latency_ms = elapsed_ms
         for prediction in predictions:
-            prediction["pipeline_latency_ms"] = elapsed_ms
+            prediction["image_pipeline_latency_ms"] = elapsed_ms
+            prediction["pipeline_latency_ms"] = elapsed_ms  # Alias tương thích ngược
         return predictions
 
     def predict_file(

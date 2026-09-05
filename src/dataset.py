@@ -229,6 +229,15 @@ def _merge_groups_connected_by_hash(frame: pd.DataFrame) -> pd.DataFrame:
             if h1 and h2 and phash_hamming_distance(h1, h2) <= 4:
                 union(phashes[index1]["group_id"], phashes[index2]["group_id"])
 
+    # Protocol B: Gộp theo cùng plate_identity / plate_text nếu có
+    plate_col = "plate_identity" if "plate_identity" in frame.columns else ("plate_text" if "plate_text" in frame.columns else None)
+    if plate_col:
+        for groups in frame.groupby(plate_col)["group_id"].unique():
+            if len(groups) > 1:
+                first = groups[0]
+                for group_id in groups[1:]:
+                    union(first, group_id)
+
     result = frame.copy()
     result["group_id"] = result["group_id"].map(find)
     return result
@@ -238,6 +247,9 @@ def audit_manifest(frame: pd.DataFrame) -> dict:
     """Thống kê chi tiết số lượng ảnh, đối tượng, nhóm nguồn và kiểm tra rò rỉ dữ liệu."""
     crossing_groups = frame.groupby("group_id")["original_split"].nunique()
     crossing_hashes = frame.groupby("md5")["original_split"].nunique()
+
+    plate_col = "plate_identity" if "plate_identity" in frame.columns else ("plate_text" if "plate_text" in frame.columns else None)
+    crossing_plates = frame.groupby(plate_col)["original_split"].nunique() if plate_col else None
 
     # Tính số cặp near-duplicates
     near_dup_pairs = 0
@@ -259,6 +271,7 @@ def audit_manifest(frame: pd.DataFrame) -> dict:
         "near_duplicate_pairs": near_dup_pairs,
         "groups_crossing_splits": int((crossing_groups > 1).sum()),
         "duplicate_hashes_crossing_splits": int((crossing_hashes > 1).sum()),
+        "plates_crossing_splits": int((crossing_plates > 1).sum()) if crossing_plates is not None else 0,
         "train_images": int(split_counts.get("train", 0)),
         "validation_images": int(split_counts.get("val", split_counts.get("valid", 0))),
         "test_images": int(split_counts.get("test", 0)),
